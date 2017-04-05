@@ -1,6 +1,6 @@
 # SmartSheetMusic
 
-Audio Resources
+## Audio Resources
 - https://wiki.python.org/moin/PythonInMusic
 - https://research.googleblog.com/2017/03/announcing-audioset-dataset-for-audio.html
 - https://github.com/adius/awesome-sheet-music
@@ -23,13 +23,45 @@ Audio Resources
 - http://www.gitxiv.com/posts/RfDnQWy2vC9JS7Rj2/music-transcription-modelling-and-composition-using-deep
 - https://cs224d.stanford.edu/reports/allenh.pdf
 
-Software Specifications
+## Software Specifications
 - Fully featured software -> too mcuh work possibly
 - Plugin/Module for third party application?
 - Small Objective - be able to precisely locate played combination of tones on a music sheet
 - Big objective - transribe the played notes into a music sheet
 
-Hardware specifications
+### Software Design for Music Sheet Location detection
+This is very basic for the moment, just outlining some ideas.
+
+** Input **
+- Audio stream
+- Music Sheet - in a midi format
+
+** Output **
+- Point in time location of the audio stream in the midi
+
+** Worfklow **
+Module 1:
+- Input is the the audio stream and the midi
+- At discrete time intervals (buffer size) audio stream is transformed via FFT - that is one snippet
+- Result is compared to the spectrogram of the Midi
+- For each snippet Module 1 outputs a set of possible locations in the Midi (there may be mutliple such locations)
+
+Module 2:
+- Inputs to module two are:
+..* The last position on the midi
+..* Output of Module 1
+..* Midi
+..* Time
+- Given the last position, the midi structure, the time that has passed since last position and the set of possible new locations find the most probable new location.
+- Output - new position in the midi
+
+### Software Design for Transcription
+[x] Recognise single note
+[] Scale up to polyphonic transcription
+[] Use notes to convert to midi
+[] Find location in a given midi
+
+## Hardware specifications
 - Two sheets, fold design
 - 10 to 13 inches e-paper
 - Two microphones
@@ -38,10 +70,23 @@ Hardware specifications
 - Speakers
 - Sub 1000$ price
 
-Hardware providers
+## Hardware providers
+### Displays
+- http://www.pervasivedisplays.com/products/102
+- http://www.eink.com/display_products.html
+- https://www.telerex-europe.com/en-gb/e-paper-displays
+- http://www.plasticlogic.com/products/drivers-only-displays/
+- https://www.alibaba.com/product-detail/AUO-9-0-inch-TFT-LCD_60495902511.html
+- https://www.alibaba.com/product-detail/e-paper-touch-screen-display_60580461193.html?spm=a2700.7724838.0.0.ynHXGb
+- https://www.alibaba.com/product-detail/13-3-touch-screen-epaper_60595975193.html?spm=a2700.7724838.0.0.ynHXGb
+- http://www.panelook.com/ES133TT2_E%20Ink_13.3_EPD_overview_27058.html
+- http://bec.com.hk/news/news-details/?tx_ttnews%5Btt_news%5D=48&cHash=5d2a70b0e24b0515b27b729d7b2abb25
 
+### Try Kits
+- http://www.pervasivedisplays.com/kits/mpicosys102
+- http://the-digital-reader.com/2013/05/23/e-ink-dives-into-the-diy-market/
 
-Competition
+## Competition
 - http://magazine.icareifyoulisten.com/archive/issue-1/issue-1-ipads-apps-make-page-turning-breeze-musicians/
 - https://itunes.apple.com/us/app/autoflip-sheet-music-viewer/id413455877?mt=8
 - http://www.pageflip.com/
