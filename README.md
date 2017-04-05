@@ -40,6 +40,7 @@ This is very basic for the moment, just outlining some ideas.
 - Point in time location of the audio stream in the midi
 
 **Worfklow**
+
 Module 1:
 - Input is the the audio stream and the midi
 - At discrete time intervals (buffer size) audio stream is transformed via FFT - that is one snippet
