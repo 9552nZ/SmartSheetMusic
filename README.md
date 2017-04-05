@@ -32,14 +32,14 @@
 ### Software Design for Music Sheet Location detection
 This is very basic for the moment, just outlining some ideas.
 
-** Input **
+**Input**
 - Audio stream
 - Music Sheet - in a midi format
 
-** Output **
+**Output**
 - Point in time location of the audio stream in the midi
 
-** Worfklow **
+**Worfklow**
 Module 1:
 - Input is the the audio stream and the midi
 - At discrete time intervals (buffer size) audio stream is transformed via FFT - that is one snippet
@@ -48,18 +48,18 @@ Module 1:
 
 Module 2:
 - Inputs to module two are:
-..* The last position on the midi
-..* Output of Module 1
-..* Midi
-..* Time
+  * The last position on the midi
+  * Output of Module 1
+  * Midi
+  * Time
 - Given the last position, the midi structure, the time that has passed since last position and the set of possible new locations find the most probable new location.
 - Output - new position in the midi
 
 ### Software Design for Transcription
-[x] Recognise single note
-[] Scale up to polyphonic transcription
-[] Use notes to convert to midi
-[] Find location in a given midi
+- [x] Recognise single note
+- [ ] Scale up to polyphonic transcription
+- [ ] Use notes to convert to midi
+- [ ] Find location in a given midi
 
 ## Hardware specifications
 - Two sheets, fold design
