@@ -27,7 +27,7 @@
 - Fully featured software -> too mcuh work possibly
 - Plugin/Module for third party application?
 - Small Objective - be able to precisely locate played combination of tones on a music sheet
-- Big objective - transribe the played notes into a music sheet
+- Big objective - transcribe the played notes into a music sheet
 
 ### Software Design for Music Sheet Location detection
 This is very basic for the moment, just outlining some ideas.
@@ -45,7 +45,7 @@ Module 1:
 - Input is the the audio stream and the midi
 - At discrete time intervals (buffer size) audio stream is transformed via FFT - that is one snippet
 - Result is compared to the spectrogram of the Midi
-- For each snippet Module 1 outputs a set of possible locations in the Midi (there may be mutliple such locations)
+- For each snippet Module 1 outputs a set of possible locations in the Midi (there may be multiple such locations)
 
 Module 2:
 - Inputs to module two are:
@@ -82,6 +82,7 @@ Module 2:
 - https://www.alibaba.com/product-detail/13-3-touch-screen-epaper_60595975193.html?spm=a2700.7724838.0.0.ynHXGb
 - http://www.panelook.com/ES133TT2_E%20Ink_13.3_EPD_overview_27058.html
 - http://bec.com.hk/news/news-details/?tx_ttnews%5Btt_news%5D=48&cHash=5d2a70b0e24b0515b27b729d7b2abb25
+- https://www.olimex.com/Products/OLinuXino/LCD/LCD-OLinuXino-10TS/open-source-hardware
 
 ### Try Kits
 - http://www.pervasivedisplays.com/kits/mpicosys102
