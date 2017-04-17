@@ -2,6 +2,11 @@ import pandas as pd
 import datetime as dt
 import mido as md
 import aubio as ab
+import numpy as np
+
+START_DATETIME = dt.datetime(2000, 1, 1, 0, 0, 0, 0)
+MIN_DELTATIME_FLOAT = 0.000001 # i.e. 1 micro-second
+MIN_DELTATIME_STR = 'us'
 
 def relative_ts_to_absolute_ts(times_sec, data_in):    
     """
@@ -39,13 +44,7 @@ def process_midi_file(filename_midi):
     times_act = []
     cnt_time = 0
     cnt_tick = 0  
-#     for i, tr in enumerate(mid.tracks):
-#     for tr in mid.tracks:
     for msg in mid.tracks[1]: # only look up in the second track                     
-#         if msg.type == 'note_on' and msg.velocity > 0:
-#             pitches_act += [msg.note]
-#             times_act += [cnt_time]
-#             
         # Find the current tempo
         tempo_ticks_tmp = [x for x in tempo_ticks if x <= cnt_tick]
         tempo = tempo_values[len(tempo_ticks_tmp)-1]
@@ -64,7 +63,8 @@ def process_midi_file(filename_midi):
             
     return(ts_act_clean)
 
-def process_wav_file(filename_wav):
+
+def process_wav_file(filename_wav, start_sec = 0.0, end_sec = float("inf")):
     """
     Read the .wav file, process it and estimate the Midi pitch number using aubio
     """
@@ -87,16 +87,59 @@ def process_wav_file(filename_wav):
     pitches_est = []
     times_est = []
     
+    # Set the cursor to the first desired frame
+    first_frame = int(samplerate * start_sec)
+    s.seek(first_frame)
+        
     # Estimate the pitches
-    total_frames = 0
+    total_frames = 0 # can be removed
     while True:
         samples, read = s()    
         pitch = pitch_o(samples)[0]
-        pitches_est += [pitch]  
-        times_est += [times_est[-1] + read / float(samplerate)] if total_frames > 0 else [0]
+        # Add 2x the pitch as we have two timestamps, one for the beginning and
+        # one for the end of the frame
+        pitches_est += [pitch, pitch]
+        times_est += [times_est[-1] + MIN_DELTATIME_FLOAT,  times_est[-1] + MIN_DELTATIME_FLOAT + read / float(samplerate)] if total_frames > 0 else [0.0, read / float(samplerate) - MIN_DELTATIME_FLOAT]
         total_frames += read
-        if read < hop_s: break     
+        if read < hop_s or times_est[-1] >= end_sec-start_sec: break     
     
+    # We want the timestamp to represent the beginning of the frame
+    # Up to here, they represent where the hop is happening 
+    # Hence, we need to take out (win_s-hop_s) / float(samplerate) 
+    times_est = map(lambda x: x - (win_s-hop_s) / float(samplerate),times_est)
+    
+    # Convert to absolute timestamps
     ts_est = relative_ts_to_absolute_ts(times_est, pitches_est)
     
+    # Get rid of the negative timestamps (has the effect of removing the 
+    # estimated pitches for which we do not have a full win-s)
+    ts_est = ts_est[ts_est.index >= START_DATETIME]
+    
     return(ts_est)
+
+def distance_midi_pitch(x, y):
+    """
+    Compute the distance between two arrays of midi numbers.
+    The function assumes that the midi data has been discretised.
+    The distance is defined as:
+    - 0 is the values are the same
+    - 1 if the abs difference is <=3
+    - 2 otherwise     
+    """
+    nb_tot = len(x)
+    
+    d = abs(x - y)
+        
+    idx_non_null = (d != 0)
+    nb_null = nb_tot - np.sum(idx_non_null)
+    nb_small = np.sum(d[idx_non_null] <= 3)
+    
+    # Compute the different contributions    
+    dist_null = 0. * nb_null 
+    dist_small = 1. * nb_small
+    dist_large = 2 * (nb_tot - nb_null - nb_small)          
+    
+    # Find the average distance (normalise per number of points)
+    d_mean = (dist_null + dist_small + dist_large) / float(nb_tot)
+    
+    return(d_mean)
