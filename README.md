@@ -100,3 +100,4 @@ Module 2:
 - http://goodereader.com/blog/electronic-readers/good-e-reader-13-3-is-ideal-for-sheet-music
 - http://www.gvido.tokyo/
 - https://musescore.com
+- http://www.sightread.co.uk/sightpad12.html
