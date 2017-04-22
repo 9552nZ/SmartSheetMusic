@@ -24,7 +24,7 @@
 - https://cs224d.stanford.edu/reports/allenh.pdf
 
 ## Software Specifications
-- Fully featured software -> too mcuh work possibly
+- Fully featured software -> too much work possibly
 - Plugin/Module for third party application?
 - Small Objective - be able to precisely locate played combination of tones on a music sheet
 - Big objective - transcribe the played notes into a music sheet
