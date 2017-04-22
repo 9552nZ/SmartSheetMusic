@@ -22,6 +22,7 @@
 - http://www.tsi.telecom-paristech.fr/aao/en/2010/07/08/maps-database-a-piano-database-for-multipitch-estimation-and-automatic-transcription-of-music/
 - http://www.gitxiv.com/posts/RfDnQWy2vC9JS7Rj2/music-transcription-modelling-and-composition-using-deep
 - https://cs224d.stanford.edu/reports/allenh.pdf
+- http://jim.afim-asso.org/jim12/pdf/jim2012_08_p_osmalskyj.pdf
 
 ## Software Specifications
 - Fully featured software -> too much work possibly
