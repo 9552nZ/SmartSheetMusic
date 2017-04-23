@@ -23,6 +23,7 @@
 - http://www.gitxiv.com/posts/RfDnQWy2vC9JS7Rj2/music-transcription-modelling-and-composition-using-deep
 - https://cs224d.stanford.edu/reports/allenh.pdf
 - http://jim.afim-asso.org/jim12/pdf/jim2012_08_p_osmalskyj.pdf
+- http://ai2-s2-pdfs.s3.amazonaws.com/30a9/0af7c214f423743472e0c82f2b5332ccb55f.pdf
 
 ## Software Specifications
 - Fully featured software -> too much work possibly
