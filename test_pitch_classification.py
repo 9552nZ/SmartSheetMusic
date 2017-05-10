@@ -9,8 +9,8 @@ The script:
 5) Plots the two time series
 """
 # Input the files names used for the test
-wd = "C:/Users/Alexis/Desktop/Business/SmartSheetMusic/Samples/Badinerie/"
-filename = "badinerie_bach_flute" 
+wd = "C:/Users/Alexis/Desktop/Business/SmartSheetMusic/Samples/Nocturnes/"
+filename = "nocturnes" 
 filename_wav = wd + filename + ".wav"
 filename_midi = wd + filename + ".mid"
 

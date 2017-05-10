@@ -51,8 +51,13 @@ class Position():
         # Axis placeholder for plotting
         if plot_online:
             plt.ion()
-            _, gca = plt.subplots()
+            fig, gca = plt.subplots()
             self.gca = gca
+            self.fig = fig
+            #self.position_proba.plot()#self.gca.plot()
+#             self.fig.canvas.draw()
+#             self.background = self.fig.canvas.copy_from_bbox(self.gca.bbox)
+            
         
     def calibrate_noise_level(self):
         
@@ -80,12 +85,17 @@ class Position():
         
         self.profiling_report += "%0.4fs seconds for noise calibration\r" % (time.time()-start_time)
     
-    def plot_online(self):
+    def plot_online(self, ts):
         
         utils.plot_chromagram(self.chromagram_est, self.sample_rate_est, self.hop_s_est, self.gca)
-        plt.pause(0.05)
-        
-        
+#         plt.cla()
+#         self.gca.plot(ts)
+#         points = self.gca.plot(ts)[0]
+#         self.fig.canvas.restore_region(self.background)
+#         self.gca.draw_artist(points)
+#         self.fig.canvas.restore_region(self.background)
+#         self.fig.canvas.blit(self.gca.bbox)
+        plt.pause(0.05)        
         
     def update_audio_data(self, new_audio_data):
         
@@ -124,15 +134,18 @@ class Position():
         elif conversion_type == 'softmax_negative':
             ts_proba = np.exp(-ts_dist)
         elif conversion_type == 'inverse_denoised':
+            
             idxs_noise = ts_dist.index[ts_dist > self.noise_level]   
             ts_proba = 1.0 / ts_dist
             ts_proba[idxs_noise] = 0.0
+        
+        Position.plot_online(self, ts_dist)
             
         # Normalise to get a well-defined probability measure
         ts_proba = ts_proba / np.sum(ts_proba)
         
-#         ordered_position_proba = ts_proba.order(ascending = False)
-#         print ordered_position_proba[0:5] 
+        ordered_position_proba = ts_proba.order(ascending = False)
+        print ordered_position_proba[0:5] 
         
         # Restribute a bit of the probabilities mass towards unlikely positions 
         # (this should break if conversion_type != 'inverse_denoised')        
@@ -202,8 +215,8 @@ class Position():
             self.profiling_report += "%0.4fs seconds for comparison\r" % comparison_time 
             self.profiling_report += "%0.4fs seconds for proba update\r" % proba_time  
                 
-            ordered_position_proba = self.position_proba.order(ascending = False)
-            print ordered_position_proba[0:5] #ts_dist.idxmin()
+#             ordered_position_proba = self.position_proba.order(ascending = False)
+#             print ordered_position_proba[0:5] #ts_dist.idxmin()
             
 #             Position.plot_chromagrame_est_online(self)
 
@@ -222,14 +235,14 @@ filename = "nocturnes"
 filename_wav = wd + filename + ".wav"
 filename_midi = wd + filename + ".mid"
 
-CHUNK = 16384
+CHUNK = 32768 #16384
 
 SAMPLERATE = 11025
 WIN_S = 4096
 HOP_S = 2048
 # utils.write_spectrogram_to_disk(wd, filename, SAMPLERATE, WIN_S, HOP_S)
 
-pos = Position(wd, filename, SAMPLERATE, WIN_S, HOP_S, verbose = False)
+pos = Position(wd, filename, SAMPLERATE, WIN_S, HOP_S, verbose = False, plot_online = True)
 
 mode = 'online'
 
