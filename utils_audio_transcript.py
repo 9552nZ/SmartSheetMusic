@@ -4,7 +4,6 @@ import mido as md
 import aubio as ab
 import numpy as np
 import librosa as lb
-import matplotlib.pyplot as plt
 from matplotlib.cm import Blues
 
 START_DATETIME = dt.datetime(2000, 1, 1, 0, 0, 0, 0)
@@ -233,18 +232,17 @@ def get_wav_spectrogram(filename, samplerate = SAMPLERATE, win_s = WIN_S, hop_s 
         # Read the .wav file
         print "Loading {} at {}Hz       \r".format(filename, samplerate)
         s = lb.core.load(filename, sr = samplerate, offset = start_sec, duration = end_sec-start_sec)
-        print "Loading completed"
-        
+        print "Loading completed \r"
+                
         nb_iter = s[0].shape[0] // hop_s # We miss the last few frames
         for i in range(nb_iter):
             samples = s[0][i*hop_s:(i+1)*hop_s]
-            spectrogram = np.vstack((spectrogram,pv(samples).norm))
-            
+            spectrogram = np.vstack((spectrogram,pv(samples).norm))           
                     
     frequencies = (samplerate / 2.) / float(fft_s-1) * np.arange(fft_s)        
     
     # Return results as a dict
-    return(dict(spectrogram=spectrogram, frequencies=frequencies))
+    return(dict(spectrogram=spectrogram, frequencies=frequencies, samplerate=samplerate, win_s=win_s, hop_s=hop_s))
 
 def get_audio_data_spectrogram(audio_data, samplerate = SAMPLERATE, win_s = WIN_S, hop_s = HOP_S):
     
@@ -268,10 +266,16 @@ def get_audio_data_spectrogram(audio_data, samplerate = SAMPLERATE, win_s = WIN_
         
     return(dict(spectrogram=spectrogram, frequencies=frequencies))
 
+def get_filename_spectrogram(filename, samplerate, win_s, hop_s):
+    
+    filename_spectrogram = filename + "_spectrogram_S{}_W{}_H{}.npy".format(samplerate, win_s, hop_s)
+    
+    return(filename_spectrogram)
+
 def write_spectrogram_to_disk(wd, filename, samplerate, win_s, hop_s):
     
     filename_wav = wd + filename + ".wav"
-    filename_spectrogram = wd + filename + "_spectrogram_S{}_W{}_H{}.npy".format(samplerate, win_s, hop_s)
+    filename_spectrogram = get_filename_spectrogram(wd + filename, samplerate, win_s, hop_s)
     spec_data_act = get_wav_spectrogram(filename_wav, samplerate = samplerate, win_s = win_s, hop_s = hop_s)
     np.save(filename_spectrogram, spec_data_act)
     
@@ -322,12 +326,10 @@ def plot_chromagram(chromagram, samplerate, hop_s, ax):
     '''
     Plot a chromagram as a heatmap
     '''    
-    # heatmap = plt.pcolor(np.transpose(chromagram), cmap = Blues)
-#     fig, ax = plt.subplots()
+
     ax.pcolor(np.transpose(chromagram), cmap=Blues, alpha=0.8)
     ax.set_frame_on(False)
     ax.set_xticks(np.arange(chromagram.shape[0]), minor=False)    
     ax.set_xticklabels(map(lambda x: "%0.1f" % x, np.arange(chromagram.shape[0]) * hop_s / float(samplerate)), minor=False)
 
     return()
-     
