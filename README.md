@@ -25,6 +25,9 @@
 - http://jim.afim-asso.org/jim12/pdf/jim2012_08_p_osmalskyj.pdf
 - http://ai2-s2-pdfs.s3.amazonaws.com/30a9/0af7c214f423743472e0c82f2b5332ccb55f.pdf
 - http://www38.zippyshare.com/v/MN7Y1qOn/file.html
+- http://articles.ircam.fr/textes/Cont09a/index.pdf
+- http://recherche.ircam.fr/equipes/temps-reel/suivi/resources/orio.2002.nime.pdf
+
 
 ## Software Specifications
 - Fully featured software -> too much work possibly
