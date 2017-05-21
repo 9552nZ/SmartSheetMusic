@@ -1,4 +1,4 @@
-# SmartSheetMusic
+- # SmartSheetMusic
 
 ## Audio Resources
 - https://wiki.python.org/moin/PythonInMusic
@@ -27,7 +27,7 @@
 - http://www38.zippyshare.com/v/MN7Y1qOn/file.html
 - http://articles.ircam.fr/textes/Cont09a/index.pdf
 - http://recherche.ircam.fr/equipes/temps-reel/suivi/resources/orio.2002.nime.pdf
-
+- http://www.cp.jku.at/research/papers/Arzt_Masterarbeit_2007.pdf
 
 ## Software Specifications
 - Fully featured software -> too much work possibly
