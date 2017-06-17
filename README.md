@@ -1,6 +1,6 @@
 - # SmartSheetMusic
 
-## Audio Resources
+## Resources and Research Papers
 - https://wiki.python.org/moin/PythonInMusic
 - https://research.googleblog.com/2017/03/announcing-audioset-dataset-for-audio.html
 - https://github.com/adius/awesome-sheet-music
@@ -28,6 +28,9 @@
 - http://articles.ircam.fr/textes/Cont09a/index.pdf
 - http://recherche.ircam.fr/equipes/temps-reel/suivi/resources/orio.2002.nime.pdf
 - http://www.cp.jku.at/research/papers/Arzt_Masterarbeit_2007.pdf
+
+## Audio Databases
+- https://staff.aist.go.jp/m.goto/RWC-MDB/
 
 ## Software Specifications
 - Fully featured software -> too much work possibly
