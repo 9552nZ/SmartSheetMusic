@@ -31,6 +31,7 @@
 
 ## Audio Databases
 - https://staff.aist.go.jp/m.goto/RWC-MDB/
+- https://www.audiolabs-erlangen.de/resources/MIR/SyncRWC60/
 
 ## Software Specifications
 - Fully featured software -> too much work possibly
