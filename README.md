@@ -28,6 +28,7 @@
 - http://articles.ircam.fr/textes/Cont09a/index.pdf
 - http://recherche.ircam.fr/equipes/temps-reel/suivi/resources/orio.2002.nime.pdf
 - http://www.cp.jku.at/research/papers/Arzt_Masterarbeit_2007.pdf
+- http://colinraffel.com/publications/icassp2016optimizing.pdf
 
 ## Audio Databases
 - https://staff.aist.go.jp/m.goto/RWC-MDB/
