@@ -34,6 +34,7 @@
 - https://staff.aist.go.jp/m.goto/RWC-MDB/
 - https://www.audiolabs-erlangen.de/resources/MIR/SyncRWC60/
 - http://resources.mpi-inf.mpg.de/SMD/SMD_MIDI-Audio-Piano-Music.html
+- https://github.com/craffel/midi-dataset (*Corresponds to Collin Raffel Thesis)
 
 ## Software Specifications
 - Fully featured software -> too much work possibly
