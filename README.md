@@ -30,6 +30,7 @@
 - http://www.cp.jku.at/research/papers/Arzt_Masterarbeit_2007.pdf
 - http://colinraffel.com/publications/icassp2016optimizing.pdf
 - http://colinraffel.com/publications/thesis.pdf
+- http://www.ee.columbia.edu/ln/rosa/matlab/alignmidi/
 
 ## Audio Databases
 - https://staff.aist.go.jp/m.goto/RWC-MDB/
