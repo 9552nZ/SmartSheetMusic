@@ -31,6 +31,7 @@
 - http://colinraffel.com/publications/icassp2016optimizing.pdf
 - http://colinraffel.com/publications/thesis.pdf
 - http://www.ee.columbia.edu/ln/rosa/matlab/alignmidi/
+- http://nbviewer.jupyter.org/github/craffel/alignment-search/blob/master/overview.ipynb
 
 ## Audio Databases
 - https://staff.aist.go.jp/m.goto/RWC-MDB/
