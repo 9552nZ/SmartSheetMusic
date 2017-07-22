@@ -1,6 +1,7 @@
 Some comments to install Fluidsynth and have it work with pretty_midi.
 (this is only approximate/partial and should be used in conjunction with the main help page
 https://sourceforge.net/p/fluidsynth/wiki/BuildingWithCMake/)
+I add the main output of this procedure here (libfluidsynth.dll) for the record, but I doubt very much that it can be just dowloaded and pasted at the right place and work...
 
 - Download CMake
 - Follow the procedure as indicated in "Building on Windows" and "Building with VisualStudio on Windows".
