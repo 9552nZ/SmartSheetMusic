@@ -5,13 +5,16 @@ import aubio as ab
 import numpy as np
 import librosa as lb
 from matplotlib.cm import Blues
+import matplotlib.pyplot as plt
+import subprocess
+import scipy.io.wavfile
 
 START_DATETIME = dt.datetime(2000, 1, 1, 0, 0, 0, 0)
 MIN_DELTATIME_FLOAT = 0.000001 # i.e. 1 micro-second
 MIN_DELTATIME_STR = 'us'
-SAMPLERATE = 44100
-WIN_S = 4096
-HOP_S = 512
+SR = 44100
+N_FFT = 4096
+HOP_LENGTH = 512
 
 def to_clipboard(arr):
     df = pd.DataFrame(arr)
@@ -29,11 +32,26 @@ def relative_ts_to_absolute_ts(times_sec, data_in):
     
     return ts
 
+def calc_midi_stats(filename_midi):
+    """
+    Compute some stats to get some sense of the content of a midi file. 
+    """
+    mid = md.MidiFile(filename_midi)
+    
+    nb_note_on = 0
+    nb_note_off = 0
+    for msg in mid.tracks[-1]: # only look at last track
+        if msg.type == 'note_on':
+            nb_note_on += 1
+        if msg.type == 'note_off':
+            nb_note_off += 1
+            
+    return nb_note_on, nb_note_off
 
 def process_midi_file(filename_midi):
     """
     Read the .midi file, extract the notes and reshape it
-    """
+    """    
     
     mid = md.MidiFile(filename_midi)
     
@@ -55,7 +73,7 @@ def process_midi_file(filename_midi):
     times_act = []
     cnt_time = 0
     cnt_tick = 0  
-    for msg in mid.tracks[1]: # only look up in the second track                     
+    for msg in mid.tracks[1]: # only look up in the second track        
         # Find the current tempo
         tempo_ticks_tmp = [x for x in tempo_ticks if x <= cnt_tick]
         tempo = tempo_values[len(tempo_ticks_tmp)-1]
@@ -80,9 +98,9 @@ def process_wav_file(filename_wav, start_sec = 0.0, end_sec = float("inf")):
     Read the .wav file, process it and estimate the Midi pitch number using aubio
     """
     downsample = 1
-    samplerate = SAMPLERATE // downsample
-    win_s = WIN_S // downsample # fft size
-    hop_s = HOP_S  // downsample # hop size
+    samplerate = SR // downsample
+    win_s = N_FFT // downsample # fft size
+    hop_s = HOP_LENGTH  // downsample # hop size
     
     # Read the .wav file
     s = ab.source(filename_wav, samplerate, hop_s)
@@ -155,148 +173,38 @@ def distance_midi_pitch(x, y):
     
     return(d_mean)
 
-def spectrogram_to_chromagram(spectrogram, frequencies):
+def distance_midi_cosine(x, y):
     '''
-    This function takes a spectrogram as input and their corresponding frequencies
-    and map them to a chromagram.
-    The reference frequency for the used scale in C3.
-    
-    Reference paper:
-    http://jim.afim-asso.org/jim12/pdf/jim2012_08_p_osmalskyj.pdf
-    
-    The frequencies taken as input may need to be checked (not entirely sure of
-    what aubio.pvoc outputs
+    Computes the distance between two columns of a piano-roll representation.
+    (i.e. 128-dimensional binary vector)
+    Use the cosine distance.
+    Could be improved by adjusting weights for:
+    - same note / different octave
+    - harmonics
     '''
+    x_null = np.sum(x) == 0
+    y_null = np.sum(y) == 0
     
-    nb_chroma = 12
-    shape_spectrogram = np.shape(spectrogram)
+    if x_null and y_null:
+        return(0.0)
     
-    # Reference frequency, i.e. C3
-    # Shall we use A4 as ref freq (440Hz) ?
-    f_ref = 130.80      
-    
-    # Map the input frequencies to chroma numbers
-    # The first item is NaN as the first frequency is 0Hz 
-    # (to be confirmed when checking the output of pvoc)
-    chroma_bands = np.concatenate(([np.NAN], np.round(nb_chroma*np.log2((frequencies[1:,])/f_ref)) % nb_chroma))
-    
-    # Loop over the chroma numbers and sum over the amplitudes in the 
-    # associated buckets
-    chroma_raw = np.zeros([shape_spectrogram[0], nb_chroma])
-    for c in np.arange(nb_chroma):
-        mask = chroma_bands == float(c)
-        chroma_raw[:, c] = np.sum(spectrogram[:, mask], 1) # Need to take sum of square?
-        
-    # Rescale the chromagram such that the total energy is 1
-    # for each time frame
-    chromagram = chroma_raw / np.sum(chroma_raw,1)[:,None]
-       
-    return(chromagram)
-
-def get_wav_spectrogram(filename, samplerate = SAMPLERATE, win_s = WIN_S, hop_s = HOP_S, start_sec = 0.0, end_sec = 100000.0, read_lib = 'librosa'):#float("inf")
-    '''
-    This function extract the STFT for a .wav file using the aubio.pvoc function.
-    The spectrogram output is associated with a set of frequencies (but these would need to 
-    be checked).
-    
-    We can also extract only part of the .wav file by setting start_sec and end_sec
-    '''
+    if (x_null and not y_null) or (not x_null and y_null):
+        return(1.0)
          
-    fft_s = win_s // 2 + 1 # fft size
-    
-    # Phase vocoder
-    # The phase vocoder also does the windowing (HanningZ)
-    # c.f. https://github.com/aubio/aubio/blob/master/src/spectral/phasevoc.h
-    pv = ab.pvoc(win_s, hop_s)
-    
-    # Array to store spectrogram
-    spectrogram = np.zeros([0, fft_s], dtype=ab.float_type)
-    
-    if read_lib == 'aubio':
-        # Read the .wav file    
-        s = ab.source(filename, 0, hop_s)#samplerate    
-        samplerate = s.samplerate
-    
-        # Set the cursor to the first desired frame
-        first_frame = int(samplerate * start_sec)
-        s.seek(first_frame)    
+    return( 1.0 - np.dot(x, y) / float(np.linalg.norm(x)*np.linalg.norm(y)))
         
-        time_tot = 0
-        while True:    
-            samples, read = s()                           
-            spectrogram = np.vstack((spectrogram,pv(samples).norm)) 
-            time_tot += read / float(samplerate)        
-            if read < hop_s or time_tot >= end_sec-start_sec: break
-                
-    elif read_lib == 'librosa':
-        # Read the .wav file
-        print "Loading {} at {}Hz       \r".format(filename, samplerate)
-        s = lb.core.load(filename, sr = samplerate, offset = start_sec, duration = end_sec-start_sec)
-        print "Loading completed \r"
-                
-        nb_iter = s[0].shape[0] // hop_s # We miss the last few frames
-        for i in range(nb_iter):
-            samples = s[0][i*hop_s:(i+1)*hop_s]
-            spectrogram = np.vstack((spectrogram,pv(samples).norm))           
-                    
-    frequencies = (samplerate / 2.) / float(fft_s-1) * np.arange(fft_s)        
-    
-    # Return results as a dict
-    return(dict(spectrogram=spectrogram, frequencies=frequencies, samplerate=samplerate, win_s=win_s, hop_s=hop_s))
 
-def get_audio_data_spectrogram(audio_data, samplerate = SAMPLERATE, win_s = WIN_S, hop_s = HOP_S):
-    
-    fft_s = win_s // 2 + 1 # fft size
-    
-    # Phase vocoder
-    pv = ab.pvoc(win_s, hop_s)
-    
-    # Array to store spectrogram
-    spectrogram = np.zeros([0, fft_s], dtype=ab.float_type)
-    
-    len_audio_data = len(audio_data)
-    cnt = 0    
-    while True:
-        sample = np.array(audio_data[cnt*hop_s:(cnt+1)*hop_s], dtype=ab.float_type)
-        spectrogram = np.vstack((spectrogram,pv(sample).norm))        
-        if len_audio_data < (cnt+2)*hop_s: break
-        cnt += 1
-        
-    frequencies = (samplerate / 2.) / float(fft_s-1) * np.arange(fft_s) 
-        
-    return(dict(spectrogram=spectrogram, frequencies=frequencies))
-
-def get_filename_spectrogram(filename, samplerate, win_s, hop_s):
-    
-    filename_spectrogram = filename + "_spectrogram_S{}_W{}_H{}.npy".format(samplerate, win_s, hop_s)
-    
-    return(filename_spectrogram)
-
-def write_spectrogram_to_disk(wd, filename, samplerate, win_s, hop_s):
-    
-    filename_wav = wd + filename + ".wav"
-    filename_spectrogram = get_filename_spectrogram(wd + filename, samplerate, win_s, hop_s)
-    spec_data_act = get_wav_spectrogram(filename_wav, samplerate = samplerate, win_s = win_s, hop_s = hop_s)
-    np.save(filename_spectrogram, spec_data_act)
-    
-def load_spectrogram_from_disk(wd, filename, samplerate, win_s, hop_s):
-
-    filename_spectrogram = wd + filename + "_spectrogram_S{}_W{}_H{}.npy".format(samplerate, win_s, hop_s)
-    spec_data_act = np.load(filename_spectrogram).item()
-    
-    return(spec_data_act)     
-
-
-def distance_chroma(x,y, nb_elmts):
+def distance_chroma(x,y, nb_frames, nb_chromas):
     '''
     This function computes the distance between two chromagrams of the same size.
     Use L2 norm, but that can be changed.
     '''
-    d = np.linalg.norm(x-y) / float(nb_elmts)
+    d = np.linalg.norm(x-y) / float(nb_frames*nb_chromas)    
+#     d = nb_frames - np.sum(x*y) # No need to divide by the product of norms as the total energy has been normalised already
     
     return(d)
 
-def compare_chomagrams(chromagram_act, chromagram_est, samplerate, hop_s):
+def compare_chomagrams(chromagram_act, chromagram_est, sr, hop_length):
     '''
     Compute the distance between an estimated chromagram (processed online) and a 
     "true" chromagram.
@@ -305,31 +213,96 @@ def compare_chomagrams(chromagram_act, chromagram_est, samplerate, hop_s):
     nb_frames_est = chromagram_est.shape[0]
     nb_frames_act = chromagram_act.shape[0]    
     
-    # Normalise the distance by the number of elements in the window
-    nb_elmts = nb_frames_est * chromagram_est.shape[1]
-
     dist = []
     # Loop over the actual chromagram and compute the distance with the 
     # estimate for each row
     for k in np.arange(nb_frames_est, nb_frames_act):
-        dist += [distance_chroma(chromagram_act[(k-nb_frames_est):k,], chromagram_est, nb_elmts)]
+        dist += [distance_chroma(chromagram_act[(k-nb_frames_est):k,], chromagram_est, nb_frames_est, chromagram_est.shape[1])]
         
     # Reshape the distance as a timeseries
-    times = np.arange(0, nb_frames_act-nb_frames_est) * hop_s / float(samplerate)
+    times = np.arange(0, nb_frames_act-nb_frames_est) * hop_length / float(sr)
         
     # Convert to absolute timestamps
     ts_dist = relative_ts_to_absolute_ts(times, dist)
     
     return(ts_dist)
 
-def plot_chromagram(chromagram, samplerate, hop_s, ax):
+def plot_chromagram(chromagram, sr, hop_length, ax):
     '''
     Plot a chromagram as a heatmap
-    '''    
-
+    '''        
+    
     ax.pcolor(np.transpose(chromagram), cmap=Blues, alpha=0.8)
     ax.set_frame_on(False)
     ax.set_xticks(np.arange(chromagram.shape[0]), minor=False)    
-    ax.set_xticklabels(map(lambda x: "%0.1f" % x, np.arange(chromagram.shape[0]) * hop_s / float(samplerate)), minor=False)
+    ax.set_xticklabels(map(lambda x: "%0.1f" % x, np.arange(chromagram.shape[0]) * hop_length / float(sr)), minor=False)
+    
+    pcm=ax.get_children()[2]
+    plt.colorbar(pcm, ax=ax)
 
     return()
+
+def synthetise(input_path, output_path, synthetise_mode = '-OwM'):
+    """
+    Synthetise a .midi file to a .wav file using Timidity++
+    Uses the portable version fo Timidity, but we should move to normal version.
+    
+    E.g.
+    input_path = 'C:\Users\Alexis\Business\SmartSheetMusic\Samples\Chopin_op28_3\Chopin_Op028-01_003_20100611-SMD.mid'
+    output_path = 'C:\Users\Alexis\Business\SmartSheetMusic\Samples\Chopin_op28_3\output.wav'
+    
+    synthetise_mode = '-OwM' Generate RIFF mono format output.
+    For all other options, see the "mode" options in: 
+    http://www.onicos.com/staff/iz/timidity/doc/options.html    
+    """
+    
+    timidity_folder = 'C:/Program Files/timidity'
+    cmd = 'timidity {} -s 44100 {} -o {}'.format(input_path, synthetise_mode, output_path)
+     
+    cmd_output = subprocess.call(cmd, shell=True, cwd=timidity_folder)    
+    
+    return(cmd_output)
+
+def write_wav(filename, data, rate = 44100):
+    """ 
+    From a numpy array, store the .wav file on the disk.
+    The numpy array may be generated by Fluidsynth.
+    """
+    
+    # Compress the data (the input format is likely to be float64)
+    # Make sure that the format is readable by Librosa
+    maxv = np.iinfo(np.int16).max
+    lb.output.write_wav(filename, (data * maxv).astype(np.int16), rate)    
+    
+    return(None)
+
+def change_file_format(filename, old_format_extension, new_format_extension):
+    """
+    Remove the old extension and append the new one
+    """
+    filename = unmake_file_format(filename, old_format_extension)
+    filename += new_format_extension
+    
+    return(filename)
+
+def make_file_format(filename, format_extension):
+    """
+    Ensure that a file has the required extension.
+    """
+    
+    if filename[len(filename)-len(format_extension):len(filename)] != format_extension:
+        filename += format_extension
+        
+    return(filename)
+
+def unmake_file_format(filename, format_extension):
+    """
+    Remove the extension of a file name.
+    """
+    
+    if filename[len(filename)-len(format_extension):len(filename)] == format_extension:
+        filename = filename[0:len(filename)-len(format_extension)]
+        
+    return(filename)
+
+

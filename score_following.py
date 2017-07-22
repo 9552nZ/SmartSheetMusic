@@ -1,0 +1,415 @@
+import librosa as lb
+import numpy as np
+import corrupt_midi
+import os
+import utils_audio_transcript as utils
+import pretty_midi
+from midi.utils import midiread, midiwrite
+import dtw
+
+class CellList():
+    '''
+    Class to handle list of cells.
+    A cell is simply a tuple of coordinates (i,j) modeling the position in
+    the cum_distance matrix.
+    '''
+    def __init__(self, rows, cols):
+        
+        self.len = len(rows)
+        assert self.len == len(cols) 
+        self.rows = rows
+        self.cols = cols    
+        
+    def __repr__(self):
+        return(np.array([np.array(self.rows).T, np.array(self.cols).T]).__repr__())   
+
+    def append(self, cell):
+        self.len += cell.len         
+        self.rows.extend(cell.rows)
+        self.cols.extend(cell.cols)
+
+    def get_cell(self, idx):        
+        return(CellList([self.rows[idx]], [self.cols[idx]]))
+    
+    def get_cell_as_tuple(self, idx):
+        return((self.rows[idx], self.cols[idx]))
+
+
+class Matcher():
+    '''
+    Implementation of the online DTW matcher as per S. Dixon.
+    Resources:
+    http://eecs.qmul.ac.uk/~simond/pub/2005/dafx05.pdf
+    https://www.eecs.qmul.ac.uk/~simond/pub/2010/Macrae-Dixon-ISMIR-2010-WindowedTimeWarping.pdf
+    http://www.cp.jku.at/research/papers/Arzt_Masterarbeit_2007.pdf
+    https://code.soundsoftware.ac.uk/projects/match/repository/entry/at/ofai/music/match/Finder.java
+    '''
+    
+    def __init__(self, wd, filename, sr, n_fft, hop_length):                
+                
+        # Load the .wav file and turn into chromagram
+        self.set_chromagram(wd, filename, sr, n_fft, hop_length)
+                
+        # Current position in the act / est data
+        # Set to -1 as no data has been processed
+        self.idx_act = -1
+        self.idx_est = -1
+        
+        # position and position_sec represent the expected position in the Midi file
+        self.position = 0
+        self.position_sec = 0
+        
+        # DTW parameters
+        self.min_data = 5 # min number of input frames to compute before doing anything
+        self.search_width = 100 # width of the band to search the optimal alignment (in frames)
+        self.diag_cost = 2.0 # the cost for the diagonal (1.0<=x<=2.0, may be set to less than 2 to let the algorithm favour diagonal moves) 
+        
+        # Boolean to check if the new input has been processed
+        self.input_advanced = False
+        
+        # Initialise large empty matrices for chromagram_est and for the cumulative distance matrix
+        self.chromagram_est = np.zeros((self.len_chromagram_act*3, self.nb_feature_chromagram))
+        self.chromagram_est.fill(np.nan)
+        self.cum_distance = np.zeros((self.chromagram_est.shape[0], self.chromagram_est.shape[0]))
+        self.cum_distance.fill(np.nan)
+        
+        # Initialise the best_paths, in order to keep the best path at each iteration
+        # (one iteration correspond to one update of the live feed)
+        self.best_paths = []
+        
+    def set_chromagram(self, wd, filename, sr, n_fft, hop_length):
+        '''        
+        Get the chromagram from the disk or process the .wav file and write 
+        the chromagram to disk
+        '''
+
+        filename_chomagram = wd + utils.unmake_file_format(filename, '.wav') + "_chromagram_S{}_W{}_H{}.npy".format(sr, n_fft, hop_length) 
+        
+        if os.path.isfile(filename_chomagram):
+            self.chromagram_act = np.load(filename_chomagram)
+        else:
+            audio_data_wav = lb.core.load(wd + utils.make_file_format(filename, '.wav'), sr = sr)
+            self.chromagram_act = Matcher.compute_chromagram(audio_data_wav[0], sr, n_fft, hop_length)
+            np.save(filename_chomagram, self.chromagram_act)            
+        
+        self.sr_act = sr
+        self.n_fft_act = n_fft
+        self.hop_length_act = hop_length
+        self.len_chromagram_act_sec = self.chromagram_act.shape[0] * self.hop_length_act / float(self.sr_act)
+        self.len_chromagram_act = self.chromagram_act.shape[0]
+        self.nb_feature_chromagram = self.chromagram_act.shape[1]
+        
+    @staticmethod
+    def compute_chromagram(y, sr, n_fft, hop_length):
+        
+        chromagram = lb.feature.chroma_cens(y=np.array(y), 
+                                            win_len_smooth=1, 
+                                            sr=sr, 
+                                            hop_length=hop_length, 
+                                            chroma_mode='stft', 
+                                            n_fft=n_fft, 
+                                            tuning=0.0).T
+        
+        return(chromagram) 
+        
+        
+    def select_advance_direction(self):        
+        
+        idx_est = self.idx_est
+        idx_act = self.idx_act
+            
+        if idx_est <= self.min_data or idx_act <= self.min_data:
+            return(0)  
+        
+        # Check if the minimum distance is in the last row or in the last column
+        arg_min_row = np.nanargmin(self.cum_distance[idx_act,0:idx_est+1])
+        arg_min_col = np.nanargmin(self.cum_distance[0:idx_act+1,idx_est])
+                
+        if arg_min_row == idx_est and arg_min_col == idx_act:
+            direction = 0 # compute both row and column
+        elif self.cum_distance[idx_act,arg_min_row] < self.cum_distance[arg_min_col,idx_est]:
+            direction = 1 # compute next row
+        else:
+            direction = 2 # compute next column  
+                        
+        return(direction)
+
+    def find_cells(self, i, j):
+        '''
+        The function identifies the cells that should be evaluated.
+        Refer to Figure 2 of http://eecs.qmul.ac.uk/~simond/pub/2005/dafx05.pdf
+        for detail on the possible cases        
+         
+        '''
+        
+        if i-1 < 0:
+            return(CellList([i],[j-1]))            
+            
+        if j-1 < 0:
+            return(CellList([i-1],[j]))
+        
+        isnan_s = np.isnan(self.cum_distance[i-1, j])
+        isnan_w = np.isnan(self.cum_distance[i, j-1])
+        isnan_sw = np.isnan(self.cum_distance[i, j-1])
+        
+        # Standard case: compute everything
+        # The case with all 3 nans should not arise
+        if not isnan_s and not isnan_w and not isnan_sw:
+            return(CellList([i-1, i, i-1],[j, j-1, j-1]))
+        
+        elif isnan_s and isnan_sw:
+            return(CellList([i],[j-1]))
+        
+        elif isnan_w and isnan_sw:
+            return(CellList([i-1],[j]))
+        
+        elif isnan_s:
+            return(CellList([i,i-1], [j-1, j-1]))
+        
+        elif isnan_w:
+            return(CellList([i-1, i-1],[j, j-1]))
+
+                                                                
+    def find_best_path(self, cells, return_distance):
+        '''
+        The function computes the local DTW path, adjusting for the weigths.
+        It relies on the cells being passed such that the diagonal is the 
+        last item (if two or three elements).
+        
+        It can either return the min distance or the min path.
+        '''
+                    
+        if cells.len == 3:
+            d = np.array([self.cum_distance[cells.get_cell_as_tuple(0)], 
+                          self.cum_distance[cells.get_cell_as_tuple(1)], 
+                          self.diag_cost * self.cum_distance[cells.get_cell_as_tuple(2)]])            
+                    
+        elif cells.len == 2:            
+            d = np.array([self.cum_distance[cells.get_cell_as_tuple(0)], self.diag_cost * self.cum_distance[cells.get_cell_as_tuple(1)]])
+            
+        else:
+            d = np.array([self.cum_distance[cells.get_cell_as_tuple(0)]])
+        
+        argmin = np.argmin(d)
+        
+        if return_distance:                
+            return(d[argmin])
+        else:
+            return(cells.get_cell(argmin))
+                            
+    def update_cum_distance(self, direction):
+        '''
+        Taking the existing cum_distance matrix and the search direction, this function
+        updates the cum_distance by finding the (local) min distance path.
+        '''
+        
+        # For the first iteration, just take the distance between the two chromagrams
+        if self.idx_act == -1 and self.idx_est == -1:
+            self.idx_act += 1
+            self.idx_est += 1
+            self.cum_distance[self.idx_act, self.idx_est] = utils.distance_chroma(self.chromagram_act[self.idx_act, :], 
+                                                                                  self.chromagram_est[self.idx_est, :], 1, 12)
+            self.input_advanced = True            
+            return                        
+        
+        if direction == 0:
+            # Update in both directions, but start by updating in the live feed direction
+            # (not required, but this is what Dixon does)
+            self.update_cum_distance(2)
+            self.update_cum_distance(1)
+            return
+                        
+        if direction == 1:
+            # Advance the score
+            self.idx_act += 1
+            idx_act = self.idx_act
+            idx_est = self.idx_est
+            
+            for k in np.arange(max(idx_est-self.search_width-1, 0), idx_est+1):                
+                distance = utils.distance_chroma(self.chromagram_act[idx_act, :], self.chromagram_est[k, :], 1, 12)                
+                cells = self.find_cells(idx_act, k)
+                self.cum_distance[idx_act, k] = distance + self.find_best_path(cells, True)                                                                 
+            return
+            
+        if direction == 2:
+            # Advance the live feed
+            self.idx_est += 1
+            self.input_advanced = True  
+            idx_act = self.idx_act
+            idx_est = self.idx_est
+            
+            for k in np.arange(max(idx_act-self.search_width-1, 0), idx_act+1):
+                distance = utils.distance_chroma(self.chromagram_act[k, :], self.chromagram_est[idx_est, :], 1, 12)
+                cells = self.find_cells(k, idx_est)
+                self.cum_distance[k, idx_est] = distance + self.find_best_path(cells, True)
+            return
+            
+    def update_best_path(self):
+        '''
+        Based on the cum distance matrix, this function finds the best path
+        Running this function is not required for the main loop, it serves mainly 
+        for ex-post analysis.
+        ''' 
+
+        idx_est = self.idx_est
+        idx_act = self.idx_act        
+        
+        # Check if the minimum distance is in the last row or in the last column
+        arg_min_row = np.nanargmin(self.cum_distance[idx_act,0:idx_est+1])
+        arg_min_col = np.nanargmin(self.cum_distance[0:idx_act+1,idx_est])
+        
+        # Collect the final point of the DTW path
+        if self.cum_distance[idx_act,arg_min_row] <= self.cum_distance[arg_min_col,idx_est]:
+            best_path = CellList([idx_act], [arg_min_row])
+            idx_est = arg_min_row
+        else:
+            best_path = CellList([arg_min_col], [idx_est])
+            idx_act = arg_min_col
+            
+        # Iterate until the starting point
+        while idx_act > 0 or idx_est > 0:
+            cells = self.find_cells(idx_act, idx_est)  
+            best_path_local = self.find_best_path(cells, False)
+            (idx_act, idx_est) = best_path_local.get_cell_as_tuple(0) 
+            best_path.append(best_path_local)
+            
+        # Keep the best path for successive iterations
+        # (the history of the best paths could be dropped at a later stage) 
+        self.best_paths.append(best_path)
+        
+    def find_position(self):
+        self.position = self.best_paths[-1].rows[0] + 1 # Add 1 (as we count frames that have been processed)
+        self.position_sec = self.position * self.hop_length_act / float(self.sr_act)             
+                                                        
+    def main_matcher(self, chromagram_est_row): 
+        '''
+        Called for every new frame of the live feed, for which we run the online DTW
+        '''
+
+        self.chromagram_est[self.idx_est+1, :] = chromagram_est_row
+        self.input_advanced = False
+
+        while not self.input_advanced:
+            
+            # Disable the matching procedure if we are at the end of the act data
+            if self.idx_act >= self.chromagram_act.shape[0] - 1:
+                return
+            
+            # Otherwise, run the main loop
+            direction = self.select_advance_direction()
+            self.update_cum_distance(direction)   
+            
+        # Do not run if we are at the starting point
+        if self.idx_act > 0 or self.idx_est > 0:                
+            self.update_best_path()
+            self.find_position()
+            
+class MatcherMidi():
+    '''
+    Offline DTW to align MIDI files. The mid-level feature used is the piano-roll representation
+    (does not require the used instrument to be a piano)    
+    '''
+     
+    def __init__(self, wd, filename1, filename2):
+         
+        self.midi_band = (0, 127) # the range of possible Midi notes
+        self.dt = 0.1 # the time resolution
+         
+        # Set up the mid-level features used for matching 
+        self.piano_roll1 = midiread(wd + filename1, r=self.midi_band, dt=self.dt).piano_roll
+        self.piano_roll2 = midiread(wd + filename2, r=self.midi_band, dt=self.dt).piano_roll
+         
+    def build_aligned_midi(self, wd, filename1, filename2):
+         
+        # Reconstruct the aligned piano rolls   
+        self.aligned_piano_roll1 = self.piano_roll1[self.path[0],:]
+        self.aligned_piano_roll2 = self.piano_roll2[self.path[1],:]
+         
+        # Reconstruct the aligned midis      
+        midiwrite(wd + filename1, self.aligned_piano_roll1, r=self.midi_band, dt=self.dt)
+        midiwrite(wd + filename2, self.aligned_piano_roll2, r=self.midi_band, dt=self.dt)
+         
+         
+    def main_matcher(self):
+                 
+        # Run the DTW matching algorithm
+        distance_tot, distance_matrix, best_path = dtw.dtw(self.piano_roll1, self.piano_roll2, utils.distance_midi_cosine)
+        self.distance_tot = distance_tot
+        self.distance_matrix = distance_matrix
+        self.path = best_path       
+        
+class MatcherEvaluator():
+    """
+    
+    """     
+    def __init__(self, wd, filename_midi):
+        
+        self.wd = wd
+        self.filename_midi_act = filename_midi
+        self.sr = 11025 # Used for both synthesis of the Midi files and alignment
+        self.midi_object = pretty_midi.PrettyMIDI(self.wd + self.filename_midi)
+        self.len_act_sec = self.midi_object._PrettyMIDI__tick_to_time[-1]
+        self.times_act_sec = np.linspace(0.0, self.len_act_sec, int(self.len_act_sec/0.01))
+        
+        self.corrupt_configs = [{'warp_func':corrupt_midi.warp_linear, 'warp_fun_args':0.8},                                
+                                {'velocity_std':0.5},
+                                ]
+        self.filenames_wav_corrupt = [] # Initialise the list of corrupted filenames 
+        
+    def corrupt(self):
+        
+        for cnt, config in enumerate(self.corrupt_configs):
+            # Make a copy of the midi object as corrupt_midi.corrupt_midi will modify it
+            midi_object_corrupt = self.midi_object
+            
+            # Apply the corruption procedure
+            times_corrupt_sec, diagnostics = corrupt_midi.corrupt_midi(midi_object_corrupt, self.times_act_sec, **config)
+            
+            # Synthetise and store the .wav file
+            audio_data = midi_object_corrupt.fluidsynth(self.sr)
+            
+            # Store the data
+            filename_wav_corrupt = utils.change_file_format(self.filename_midi_act, '.mid', '.wav', append = '_{}'.format(cnt))
+            self.filenames_wav_corrupt.append(filename_wav_corrupt) # Keep the names for later use            
+            utils.write_wav(self.wd + filename_wav_corrupt, audio_data, rate = self.sr)            
+            
+    def align(self):
+        
+        n_fft = 2048
+        hop_length = 1024
+        
+        # First, turn the original .mid file into .wav
+        self.filename_wav_act = utils.change_file_format(self.filename_midi_act, '.mid', '.wav')
+        utils.write_wav(self.wd + self.filename_wav_act, pretty_midi.PrettyMIDI(self.wd + self.filename_midi_act).fluidsynth(self.sr), rate = self.sr)
+        
+        # Initialise the matcher
+        matcher = Matcher(self.wd, self.filename_wav_act, self.sr, n_fft, hop_length)
+        
+        # Loop over the configs
+        for filename_wav_corrupt in self.filenames_wav_corrupt:
+            
+            # Copy the matcher as it will be modified
+            matcher_tmp = matcher
+            
+            # Load the audio data
+            audio_data_est = lb.core.load(self.wd + filename_wav_corrupt, sr = self.sr)[0]
+            
+            # Compute the chromagram, use the engine of the matcher to ensure both chromagram have 
+            # been computed with the same procedure.
+            chromagram_est = Matcher.compute_chromagram(audio_data_est, self.sr, n_fft, hop_length)
+            
+            # Run the online alignment, frame by frame
+            nb_frames_est = chromagram_est.shape[0]
+            for n in range(nb_frames_est):
+                matcher.main_matcher(chromagram_est[n,:])
+                
+    def evaluate(self):
+ 
+        
+    def main_evaluation(self):
+        self.corrupt()
+        self.align()
+
+
+def f(x=2, y=1):
+    print x, y
