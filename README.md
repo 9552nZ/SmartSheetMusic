@@ -118,3 +118,5 @@ Module 2:
 - https://musescore.com
 - http://www.sightread.co.uk/sightpad12.html
 - http://tonara.com/
+- https://www.youtube.com/watch?v=XaVEastL8dw
+- https://www.youtube.com/watch?v=7E2DwOuGR1U
