@@ -6,6 +6,7 @@ import utils_audio_transcript as utils
 import pretty_midi
 from midi.utils import midiread, midiwrite
 import dtw
+import copy
 
 class CellList():
     '''
@@ -27,7 +28,12 @@ class CellList():
         self.len += cell.len         
         self.rows.extend(cell.rows)
         self.cols.extend(cell.cols)
-
+        
+    def prepend(self, cell):
+        self.len += cell.len
+        self.rows = cell.rows + self.rows
+        self.cols = cell.cols + self.cols 
+        
     def get_cell(self, idx):        
         return(CellList([self.rows[idx]], [self.cols[idx]]))
     
@@ -56,8 +62,8 @@ class Matcher():
         self.idx_est = -1
         
         # position and position_sec represent the expected position in the Midi file
-        self.position = 0
-        self.position_sec = 0
+        self.position = [0]
+        self.position_sec = [0]
         
         # DTW parameters
         self.min_data = 5 # min number of input frames to compute before doing anything
@@ -244,6 +250,39 @@ class Matcher():
                 self.cum_distance[k, idx_est] = distance + self.find_best_path(cells, True)
             return
             
+#     def update_best_path(self):
+#         '''
+#         Based on the cum distance matrix, this function finds the best path
+#         Running this function is not required for the main loop, it serves mainly 
+#         for ex-post analysis.
+#         ''' 
+# 
+#         idx_est = self.idx_est
+#         idx_act = self.idx_act        
+#         
+#         # Check if the minimum distance is in the last row or in the last column
+#         arg_min_row = np.nanargmin(self.cum_distance[idx_act,0:idx_est+1])
+#         arg_min_col = np.nanargmin(self.cum_distance[0:idx_act+1,idx_est])
+#         
+#         # Collect the final point of the DTW path
+#         if self.cum_distance[idx_act,arg_min_row] <= self.cum_distance[arg_min_col,idx_est]:
+#             best_path = CellList([idx_act], [arg_min_row])
+#             idx_est = arg_min_row
+#         else:
+#             best_path = CellList([arg_min_col], [idx_est])
+#             idx_act = arg_min_col
+#             
+#         # Iterate until the starting point
+#         while idx_act > 0 or idx_est > 0:
+#             cells = self.find_cells(idx_act, idx_est)  
+#             best_path_local = self.find_best_path(cells, False)
+#             (idx_act, idx_est) = best_path_local.get_cell_as_tuple(0) 
+#             best_path.append(best_path_local)
+#             
+#         # Keep the best path for successive iterations
+#         # (the history of the best paths could be dropped at a later stage) 
+#         self.best_paths.append(best_path)
+
     def update_best_path(self):
         '''
         Based on the cum distance matrix, this function finds the best path
@@ -251,20 +290,10 @@ class Matcher():
         for ex-post analysis.
         ''' 
 
-        idx_est = self.idx_est
-        idx_act = self.idx_act        
-        
-        # Check if the minimum distance is in the last row or in the last column
-        arg_min_row = np.nanargmin(self.cum_distance[idx_act,0:idx_est+1])
-        arg_min_col = np.nanargmin(self.cum_distance[0:idx_act+1,idx_est])
-        
-        # Collect the final point of the DTW path
-        if self.cum_distance[idx_act,arg_min_row] <= self.cum_distance[arg_min_col,idx_est]:
-            best_path = CellList([idx_act], [arg_min_row])
-            idx_est = arg_min_row
-        else:
-            best_path = CellList([arg_min_col], [idx_est])
-            idx_act = arg_min_col
+        idx_est = self.idx_est               
+        idx_act = np.nanargmin(self.cum_distance[0:self.idx_act+1,idx_est])
+
+        best_path = CellList([idx_act], [idx_est])       
             
         # Iterate until the starting point
         while idx_act > 0 or idx_est > 0:
@@ -275,30 +304,37 @@ class Matcher():
             
         # Keep the best path for successive iterations
         # (the history of the best paths could be dropped at a later stage) 
-        self.best_paths.append(best_path)
+        self.best_paths.append(best_path)        
         
     def find_position(self):
-        self.position = self.best_paths[-1].rows[0] + 1 # Add 1 (as we count frames that have been processed)
-        self.position_sec = self.position * self.hop_length_act / float(self.sr_act)             
+        self.position.append(self.best_paths[-1].rows[0] + 1) # Add 1 (as we count frames that have been processed)
+        self.position_sec.append(self.position[-1] * self.hop_length_act / float(self.sr_act))             
                                                         
     def main_matcher(self, chromagram_est_row): 
         '''
         Called for every new frame of the live feed, for which we run the online DTW
         '''
-
+        
+        # Store the new chromagram
         self.chromagram_est[self.idx_est+1, :] = chromagram_est_row
+        
+        # Disable the matching procedure if we are at the end of the act data
+        # In that case, we keep updating the best path (keeping idx_act to the last act value)
+        if self.idx_act >= self.len_chromagram_act - 1:
+            self.idx_est += 1 # Increment the estimated position nonetheless
+            best_path = copy.copy(self.best_paths[-1])
+            best_path.prepend(CellList([self.idx_act],[self.idx_est]))
+            self.best_paths.append(best_path)
+            self.find_position()
+            return
+                                    
         self.input_advanced = False
-
-        while not self.input_advanced:
-            
-            # Disable the matching procedure if we are at the end of the act data
-            if self.idx_act >= self.chromagram_act.shape[0] - 1:
-                return
-            
-            # Otherwise, run the main loop
+        # Run the main loop
+        while not self.input_advanced:             
             direction = self.select_advance_direction()
             self.update_cum_distance(direction)   
             
+        # Find the best path and the current position
         # Do not run if we are at the starting point
         if self.idx_act > 0 or self.idx_est > 0:                
             self.update_best_path()
@@ -340,40 +376,62 @@ class MatcherMidi():
         
 class MatcherEvaluator():
     """
-    
+    Class to evaluate the score following procedure.
+    1) Apply several corruptions to the original Midi file
+    2) Perform alignment for each
+    3) Compute the difference between ground-truth and estimated positions
     """     
     def __init__(self, wd, filename_midi):
         
         self.wd = wd
         self.filename_midi_act = filename_midi
         self.sr = 11025 # Used for both synthesis of the Midi files and alignment
-        self.midi_object = pretty_midi.PrettyMIDI(self.wd + self.filename_midi)
+        self.midi_object = pretty_midi.PrettyMIDI(self.wd + self.filename_midi_act) # Keep the original Midi file in memory 
         self.len_act_sec = self.midi_object._PrettyMIDI__tick_to_time[-1]
-        self.times_act_sec = np.linspace(0.0, self.len_act_sec, int(self.len_act_sec/0.01))
+        self.times_ori_act = np.linspace(0.0, self.len_act_sec, int(self.len_act_sec/0.01)) # The reference timestamps in the original data
+        self.times_est_all = [] # Placeholder for the output times of the alignment procedure [corrupted, original]
+        self.times_cor_act_all = [] # Placeholder for the corrupted times (ground-truth)
+        self.alignement_stats = [] # Placeholder for the output of the evaluation procedure 
         
-        self.corrupt_configs = [{'warp_func':corrupt_midi.warp_linear, 'warp_fun_args':0.8},                                
-                                {'velocity_std':0.5},
-                                ]
-        self.filenames_wav_corrupt = [] # Initialise the list of corrupted filenames 
+        # Build the corruption configs
+        self.corrupt_configs = [
+            {'warp_func':corrupt_midi.warp_linear, 'warp_func_args':{'multiplier' : 0.8}},
+            {'warp_func':corrupt_midi.warp_linear, 'warp_func_args':{'multiplier' : 1.5}},                                
+            {'velocity_std':0.5},
+            {'velocity_std':2.0},
+            {},
+            ]
+        self.filenames_wav_corrupt = [] # Placeholder the list of corrupted filenames 
         
     def corrupt(self):
+        '''
+        Loop over the corruption configs, apply these to the Midi, synthetise and store as .wav.
+        '''
         
         for cnt, config in enumerate(self.corrupt_configs):
             # Make a copy of the midi object as corrupt_midi.corrupt_midi will modify it
-            midi_object_corrupt = self.midi_object
+            midi_object_corrupt = copy.deepcopy(self.midi_object)
             
             # Apply the corruption procedure
-            times_corrupt_sec, diagnostics = corrupt_midi.corrupt_midi(midi_object_corrupt, self.times_act_sec, **config)
+            times_cor_act, diagnostics = corrupt_midi.corrupt_midi(midi_object_corrupt, self.times_ori_act, **config)
+            self.times_cor_act_all.append(times_cor_act)
             
             # Synthetise and store the .wav file
             audio_data = midi_object_corrupt.fluidsynth(self.sr)
             
-            # Store the data
+            # Store the .wav data
             filename_wav_corrupt = utils.change_file_format(self.filename_midi_act, '.mid', '.wav', append = '_{}'.format(cnt))
             self.filenames_wav_corrupt.append(filename_wav_corrupt) # Keep the names for later use            
-            utils.write_wav(self.wd + filename_wav_corrupt, audio_data, rate = self.sr)            
+            utils.write_wav(self.wd + filename_wav_corrupt, audio_data, rate = self.sr)
+            
+            # Store the .mid (not required)
+            midi_object_corrupt.write(self.wd + self.filename_midi_act[:len(self.filename_midi_act)-4] + '_{}.mid'.format(cnt))            
             
     def align(self):
+        '''
+        Perform the alignement procedure between the original .wav and each of the corrupted .wav.
+        Keep the results of the alignment procedure.
+        '''
         
         n_fft = 2048
         hop_length = 1024
@@ -389,10 +447,10 @@ class MatcherEvaluator():
         for filename_wav_corrupt in self.filenames_wav_corrupt:
             
             # Copy the matcher as it will be modified
-            matcher_tmp = matcher
+            matcher_tmp = copy.deepcopy(matcher)
             
             # Load the audio data
-            audio_data_est = lb.core.load(self.wd + filename_wav_corrupt, sr = self.sr)[0]
+            audio_data_est = lb.core.load(self.wd + filename_wav_corrupt, sr = matcher_tmp.sr_act)[0]
             
             # Compute the chromagram, use the engine of the matcher to ensure both chromagram have 
             # been computed with the same procedure.
@@ -401,15 +459,22 @@ class MatcherEvaluator():
             # Run the online alignment, frame by frame
             nb_frames_est = chromagram_est.shape[0]
             for n in range(nb_frames_est):
-                matcher.main_matcher(chromagram_est[n,:])
+                matcher_tmp.main_matcher(chromagram_est[n,:])
+                
+            # Keep the alignment output
+            # Not sure whether we should add/take out one frame... Also, we should use matcher_tmp.sr_est once possible
+            times_cor_est = np.arange(nb_frames_est) * matcher_tmp.hop_length_act / float(matcher_tmp.sr_act) 
+            times_ori_est = np.array(matcher_tmp.position_sec)
+            self.times_est_all.append(np.array([times_cor_est, times_ori_est]).T)
                 
     def evaluate(self):
- 
+        '''
+        Loop over the corruption configs and calculate the alignment stats.
+        '''
+        for cnt, times_est in enumerate(self.times_est_all):
+            self.alignement_stats.append(utils.calc_alignment_stats(times_est[:,0], times_est[:,1], self.times_cor_act_all[cnt], self.times_ori_act))
         
     def main_evaluation(self):
         self.corrupt()
         self.align()
-
-
-def f(x=2, y=1):
-    print x, y
+        self.evaluate()
