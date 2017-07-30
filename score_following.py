@@ -5,8 +5,10 @@ import os
 import utils_audio_transcript as utils
 import pretty_midi
 from midi.utils import midiread, midiwrite
+from math import floor, ceil
 import dtw
 import copy
+import matplotlib.pyplot as plt
 
 class CellList():
     '''
@@ -68,15 +70,15 @@ class Matcher():
         # DTW parameters
         self.min_data = 5 # min number of input frames to compute before doing anything
         self.search_width = 100 # width of the band to search the optimal alignment (in frames)
-        self.diag_cost = 2.0 # the cost for the diagonal (1.0<=x<=2.0, may be set to less than 2 to let the algorithm favour diagonal moves) 
+        self.diag_cost = 1.0 # the cost for the diagonal (1.0<=x<=2.0, may be set to less than 2 to let the algorithm favour diagonal moves) 
         
         # Boolean to check if the new input has been processed
         self.input_advanced = False
         
         # Initialise large empty matrices for chromagram_est and for the cumulative distance matrix
-        self.chromagram_est = np.zeros((self.len_chromagram_act*3, self.nb_feature_chromagram))
+        self.chromagram_est = np.zeros((self.len_chromagram_act*2, self.nb_feature_chromagram))
         self.chromagram_est.fill(np.nan)
-        self.cum_distance = np.zeros((self.chromagram_est.shape[0], self.chromagram_est.shape[0]))
+        self.cum_distance = np.zeros((self.chromagram_est.shape[0], self.chromagram_est.shape[0]), dtype='float16')
         self.cum_distance.fill(np.nan)
         
         # Initialise the best_paths, in order to keep the best path at each iteration
@@ -108,11 +110,16 @@ class Matcher():
     @staticmethod
     def compute_chromagram(y, sr, n_fft, hop_length):
         
-        chromagram = lb.feature.chroma_cens(y=np.array(y), 
-                                            win_len_smooth=1, 
+#         chromagram = lb.feature.chroma_cens(y=np.array(y), 
+#                                             win_len_smooth=1, 
+#                                             sr=sr, 
+#                                             hop_length=hop_length, 
+#                                             chroma_mode='stft', 
+#                                             n_fft=n_fft, 
+#                                             tuning=0.0).T
+        chromagram = lb.feature.chroma_stft(y=np.array(y),  
                                             sr=sr, 
                                             hop_length=hop_length, 
-                                            chroma_mode='stft', 
                                             n_fft=n_fft, 
                                             tuning=0.0).T
         
@@ -158,11 +165,15 @@ class Matcher():
         isnan_w = np.isnan(self.cum_distance[i, j-1])
         isnan_sw = np.isnan(self.cum_distance[i, j-1])
         
-        # Standard case: compute everything
         # The case with all 3 nans should not arise
+        if isnan_s and isnan_w and isnan_sw: 
+            raise ValueError('Could not find any valid cell leading to ({}, {})'.format(i, j))        
+        
+        # Standard case: compute everything        
         if not isnan_s and not isnan_w and not isnan_sw:
             return(CellList([i-1, i, i-1],[j, j-1, j-1]))
         
+        # Otherwise, find the relevant cells to compute
         elif isnan_s and isnan_sw:
             return(CellList([i],[j-1]))
         
@@ -244,7 +255,7 @@ class Matcher():
             idx_act = self.idx_act
             idx_est = self.idx_est
             
-            for k in np.arange(max(idx_act-self.search_width-1, 0), idx_act+1):
+            for k in np.arange(max(idx_act-self.search_width-1, 0), idx_act+1): #max(idx_act-self.search_width+1, 0) ???
                 distance = utils.distance_chroma(self.chromagram_act[k, :], self.chromagram_est[idx_est, :], 1, 12)
                 cells = self.find_cells(k, idx_est)
                 self.cum_distance[k, idx_est] = distance + self.find_best_path(cells, True)
@@ -308,7 +319,18 @@ class Matcher():
         
     def find_position(self):
         self.position.append(self.best_paths[-1].rows[0] + 1) # Add 1 (as we count frames that have been processed)
-        self.position_sec.append(self.position[-1] * self.hop_length_act / float(self.sr_act))             
+        self.position_sec.append(self.position[-1] * self.hop_length_act / float(self.sr_act))  
+        
+    def plot(self, path_nb=-1):
+        '''
+        Plot the cumulative distance matrix as a heat map and the best path.
+        
+        path_nb is the number of the path we want to plot (-1 for the final path). 
+        '''
+        utils.plot_dtw_distance(self.cum_distance)
+        
+        if path_nb is not None:
+            plt.plot(self.best_paths[path_nb].cols, self.best_paths[-1].rows, color='black')     
                                                         
     def main_matcher(self, chromagram_est_row): 
         '''
@@ -318,19 +340,30 @@ class Matcher():
         # Store the new chromagram
         self.chromagram_est[self.idx_est+1, :] = chromagram_est_row
         
-        # Disable the matching procedure if we are at the end of the act data
-        # In that case, we keep updating the best path (keeping idx_act to the last act value)
-        if self.idx_act >= self.len_chromagram_act - 1:
-            self.idx_est += 1 # Increment the estimated position nonetheless
-            best_path = copy.copy(self.best_paths[-1])
-            best_path.prepend(CellList([self.idx_act],[self.idx_est]))
-            self.best_paths.append(best_path)
-            self.find_position()
-            return
+#         # Disable the matching procedure if we are at the end of the act data
+#         # In that case, we keep updating the best path (keeping idx_act to the last act value)
+#         if self.idx_act >= self.len_chromagram_act - 1:
+#             self.idx_est += 1 # Increment the estimated position nonetheless
+#             best_path = copy.copy(self.best_paths[-1])
+#             best_path.prepend(CellList([self.idx_act],[self.idx_est]))
+#             self.best_paths.append(best_path)
+#             self.find_position()
+#             return
                                     
         self.input_advanced = False
         # Run the main loop
-        while not self.input_advanced:             
+        while not self.input_advanced:
+            
+            # Disable the matching procedure if we are at the end of the act data
+            # In that case, we keep updating the best path (keeping idx_act to the last act value)
+            if self.idx_act >= self.len_chromagram_act - 1:
+                self.idx_est += 1 # Increment the estimated position nonetheless
+                best_path = copy.copy(self.best_paths[-1])
+                best_path.prepend(CellList([self.idx_act],[self.idx_est]))
+                self.best_paths.append(best_path)
+                self.find_position()
+                return
+                     
             direction = self.select_advance_direction()
             self.update_cum_distance(direction)   
             
@@ -395,13 +428,14 @@ class MatcherEvaluator():
         
         # Build the corruption configs
         self.corrupt_configs = [
-            {'warp_func':corrupt_midi.warp_linear, 'warp_func_args':{'multiplier' : 0.8}},
+#             {'warp_func':corrupt_midi.warp_linear, 'warp_func_args':{'multiplier' : 0.8}},
             {'warp_func':corrupt_midi.warp_linear, 'warp_func_args':{'multiplier' : 1.5}},                                
-            {'velocity_std':0.5},
-            {'velocity_std':2.0},
-            {},
+#             {'velocity_std':0.5},
+#             {'velocity_std':2.0},
+#             {},
             ]
-        self.filenames_wav_corrupt = [] # Placeholder the list of corrupted filenames 
+        self.filenames_wav_corrupt = [] # Placeholder the list of corrupted filenames
+        self.matchers = [] # Placeholder for the matchers. May be removed at a later stage (for reporting only)... 
         
     def corrupt(self):
         '''
@@ -466,6 +500,9 @@ class MatcherEvaluator():
             times_cor_est = np.arange(nb_frames_est) * matcher_tmp.hop_length_act / float(matcher_tmp.sr_act) 
             times_ori_est = np.array(matcher_tmp.position_sec)
             self.times_est_all.append(np.array([times_cor_est, times_ori_est]).T)
+            
+            # Keep the matchers (for reporting only, may be removed at a later stage)
+#             self.matchers.append(matcher_tmp)            
                 
     def evaluate(self):
         '''
@@ -473,6 +510,17 @@ class MatcherEvaluator():
         '''
         for cnt, times_est in enumerate(self.times_est_all):
             self.alignement_stats.append(utils.calc_alignment_stats(times_est[:,0], times_est[:,1], self.times_cor_act_all[cnt], self.times_ori_act))
+            
+    def plot_alignment_error(self):
+        '''
+        Plot the alignment error for all the corruption configs.
+        '''
+        nbConf = len(self.corrupt_configs)
+        axarr = plt.subplots(int(ceil(nbConf/2.0)), min(nbConf, 2))[1]
+        for cnt, config in enumerate(self.corrupt_configs):
+            ax = axarr[int(floor(cnt/2.0)), cnt%2 ]
+            ax.plot(self.alignement_stats[cnt])
+            ax.set_title(str(config))
         
     def main_evaluation(self):
         self.corrupt()

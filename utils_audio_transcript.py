@@ -227,20 +227,48 @@ def compare_chomagrams(chromagram_act, chromagram_est, sr, hop_length):
     
     return(ts_dist)
 
-def plot_chromagram(chromagram, sr, hop_length, ax):
+def plot_chromagram(chromagram, sr=1.0, hop_length=1.0, ax=None, xticks_sec=True):
     '''
-    Plot a chromagram as a heatmap
+    Plot a chromagram as a heatmap.
+    Add to an existing plot or create a new one.
     '''        
     
+    if ax is None:
+#         plt.figure()
+        ax = plt.gca()
+        
     ax.pcolor(np.transpose(chromagram), cmap=Blues, alpha=0.8)
     ax.set_frame_on(False)
-    ax.set_xticks(np.arange(chromagram.shape[0]), minor=False)    
-    ax.set_xticklabels(map(lambda x: "%0.1f" % x, np.arange(chromagram.shape[0]) * hop_length / float(sr)), minor=False)
     
-    pcm=ax.get_children()[2]
-    plt.colorbar(pcm, ax=ax)
+    if xticks_sec:
+        # Set the x axis to seconds
+        xticks = np.linspace(0, chromagram.shape[0], 10)
+        ax.set_xticks(xticks, minor=False)  
+        ax.set_xticklabels(map(lambda x: "%0.1f" % x, xticks * hop_length / float(sr)), minor=False)
+    
+#     pcm=ax.get_children()[2]
+#     plt.colorbar(pcm, ax=ax)
 
     return()
+
+def plot_dtw_distance(cum_distance):
+    '''
+    Plot the cumulative distance as a heat map to visualise the DTW.
+
+    Parameters
+    ----------
+    cum_distance : np.ndarray
+        The cumulative choma/choma distance
+    
+    '''
+    mask_rows = np.invert(np.all(np.isnan(cum_distance), 1))
+    mask_cols = np.invert(np.all(np.isnan(cum_distance), 0))
+    cum_distance = cum_distance[mask_rows, :][:, mask_cols]
+    
+    plt.pcolor(cum_distance, cmap=Blues, alpha=0.8, vmin=np.nanmin(cum_distance), vmax=np.nanmax(cum_distance))
+    plt.colorbar()
+    
+    return()    
 
 def synthetise(input_path, output_path, synthetise_mode = '-OwM'):
     """
@@ -276,12 +304,12 @@ def write_wav(filename, data, rate = 44100):
     
     return(None)
 
-def change_file_format(filename, old_format_extension, new_format_extension):
+def change_file_format(filename, old_format_extension, new_format_extension, append = ''):
     """
     Remove the old extension and append the new one
     """
     filename = unmake_file_format(filename, old_format_extension)
-    filename += new_format_extension
+    filename += append + new_format_extension
     
     return(filename)
 
@@ -305,4 +333,35 @@ def unmake_file_format(filename, format_extension):
         
     return(filename)
 
+def calc_alignment_stats(times_cor_est, times_ori_est, times_cor_act, times_ori_act):
+    """
+    Compute some stats to evaluate the quality of the alignment procedure.    
+    The alignment error is computed for each estimated time in the corrupted data.    
+    
+    Negative alignment_error --> we are late in the partition, e.g. we think we are 
+    in the 4th measure, while we are actually at the 5th measure.
+    Positive alignment error --> we are early in the partition. 
+    
+    Parameters
+    ----------
+    times_cor_est : np.ndarray
+        The output times of the alignment procedure (timestamps in the corrupted .wav).
+    times_ori_est : np.ndarray
+        The output times of the alignment procedure (timestamps in the original .wav).        
+    times_cor_act : np.ndarray
+        The ground-truth timestamps in the corrupted .wav.
+    times_cor_act : np.ndarray
+        The ground-truth timestamps in the original .wav.        
+    
+    """ 
+    if len(times_cor_est) != len(times_ori_est) or len(times_cor_act) != len(times_ori_act): raise ValueError('Input times not matching')  
+    
+    # Interpolate the times_ori_act values. Extrapolation may need to be added later
+    times_ori_act_interp = np.interp(times_cor_est, times_cor_act, times_ori_act)
+    
+    # Compute the alignment errors as the difference between 
+    # estimate vs actual times in the original score
+    alignment_error = times_ori_est - times_ori_act_interp
+    
+    return(alignment_error)
 
