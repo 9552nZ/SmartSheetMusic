@@ -9,7 +9,41 @@ from math import floor, ceil
 import dtw
 import copy
 import matplotlib.pyplot as plt
-
+            
+class MatcherMidi():
+    '''
+    Offline DTW to align MIDI files. The mid-level feature used is the piano-roll representation
+    (does not require the used instrument to be a piano)    
+    '''
+     
+    def __init__(self, wd, filename1, filename2):
+         
+        self.midi_band = (0, 127) # the range of possible Midi notes
+        self.dt = 0.1 # the time resolution
+         
+        # Set up the mid-level features used for matching 
+        self.piano_roll1 = midiread(wd + filename1, r=self.midi_band, dt=self.dt).piano_roll
+        self.piano_roll2 = midiread(wd + filename2, r=self.midi_band, dt=self.dt).piano_roll
+         
+    def build_aligned_midi(self, wd, filename1, filename2):
+         
+        # Reconstruct the aligned piano rolls   
+        self.aligned_piano_roll1 = self.piano_roll1[self.path[0],:]
+        self.aligned_piano_roll2 = self.piano_roll2[self.path[1],:]
+         
+        # Reconstruct the aligned midis      
+        midiwrite(wd + filename1, self.aligned_piano_roll1, r=self.midi_band, dt=self.dt)
+        midiwrite(wd + filename2, self.aligned_piano_roll2, r=self.midi_band, dt=self.dt)
+         
+         
+    def main_matcher(self):
+                 
+        # Run the DTW matching algorithm
+        distance_tot, distance_matrix, best_path = dtw.dtw(self.piano_roll1, self.piano_roll2, utils.distance_midi_cosine)
+        self.distance_tot = distance_tot
+        self.distance_matrix = distance_matrix
+        self.path = best_path       
+        
 class CellList():
     '''
     Class to handle list of cells.
@@ -68,8 +102,8 @@ class Matcher():
         self.position_sec = [0]
         
         # DTW parameters
-        self.min_data = 5 # min number of input frames to compute before doing anything
         self.search_width = 100 # width of the band to search the optimal alignment (in frames)
+        self.min_data = 100 # min number of input frames to compute before doing anything        
         self.diag_cost = 1.0 # the cost for the diagonal (1.0<=x<=2.0, may be set to less than 2 to let the algorithm favour diagonal moves) 
         
         # Boolean to check if the new input has been processed
@@ -131,7 +165,7 @@ class Matcher():
         idx_est = self.idx_est
         idx_act = self.idx_act
             
-        if idx_est <= self.min_data or idx_act <= self.min_data:
+        if idx_est < self.min_data or idx_act < self.min_data:
             return(0)  
         
         # Check if the minimum distance is in the last row or in the last column
@@ -163,15 +197,20 @@ class Matcher():
         
         isnan_s = np.isnan(self.cum_distance[i-1, j])
         isnan_w = np.isnan(self.cum_distance[i, j-1])
-        isnan_sw = np.isnan(self.cum_distance[i, j-1])
+        isnan_sw = np.isnan(self.cum_distance[i-1, j-1])
         
-        # The case with all 3 nans should not arise
-        if isnan_s and isnan_w and isnan_sw: 
-            raise ValueError('Could not find any valid cell leading to ({}, {})'.format(i, j))        
+#         # The case with all 3 nans should not arise
+#         if isnan_s and isnan_w and isnan_sw: 
+#             raise ValueError('Could not find any valid cell leading to ({}, {})'.format(i, j))        
         
         # Standard case: compute everything        
         if not isnan_s and not isnan_w and not isnan_sw:
             return(CellList([i-1, i, i-1],[j, j-1, j-1]))
+        
+        # Edge case: nothing to compute.  
+        elif isnan_s and isnan_w and isnan_sw:
+            print('Could not find any valid cell leading to  {}, {}'.format(i, j))
+            return(CellList([], []))
         
         # Otherwise, find the relevant cells to compute
         elif isnan_s and isnan_sw:
@@ -204,8 +243,11 @@ class Matcher():
         elif cells.len == 2:            
             d = np.array([self.cum_distance[cells.get_cell_as_tuple(0)], self.diag_cost * self.cum_distance[cells.get_cell_as_tuple(1)]])
             
-        else:
+        elif cells.len == 1:
             d = np.array([self.cum_distance[cells.get_cell_as_tuple(0)]])
+            
+        else:
+            d = np.array([np.nan])
         
         argmin = np.argmin(d)
         
@@ -242,7 +284,7 @@ class Matcher():
             idx_act = self.idx_act
             idx_est = self.idx_est
             
-            for k in np.arange(max(idx_est-self.search_width-1, 0), idx_est+1):                
+            for k in np.arange(max(idx_est-self.search_width+1, 0), idx_est+1):                
                 distance = utils.distance_chroma(self.chromagram_act[idx_act, :], self.chromagram_est[k, :], 1, 12)                
                 cells = self.find_cells(idx_act, k)
                 self.cum_distance[idx_act, k] = distance + self.find_best_path(cells, True)                                                                 
@@ -255,44 +297,11 @@ class Matcher():
             idx_act = self.idx_act
             idx_est = self.idx_est
             
-            for k in np.arange(max(idx_act-self.search_width-1, 0), idx_act+1): #max(idx_act-self.search_width+1, 0) ???
+            for k in np.arange(max(idx_act-self.search_width+1, 0), idx_act+1): #max(idx_act-self.search_width+1, 0) ???
                 distance = utils.distance_chroma(self.chromagram_act[k, :], self.chromagram_est[idx_est, :], 1, 12)
                 cells = self.find_cells(k, idx_est)
                 self.cum_distance[k, idx_est] = distance + self.find_best_path(cells, True)
             return
-            
-#     def update_best_path(self):
-#         '''
-#         Based on the cum distance matrix, this function finds the best path
-#         Running this function is not required for the main loop, it serves mainly 
-#         for ex-post analysis.
-#         ''' 
-# 
-#         idx_est = self.idx_est
-#         idx_act = self.idx_act        
-#         
-#         # Check if the minimum distance is in the last row or in the last column
-#         arg_min_row = np.nanargmin(self.cum_distance[idx_act,0:idx_est+1])
-#         arg_min_col = np.nanargmin(self.cum_distance[0:idx_act+1,idx_est])
-#         
-#         # Collect the final point of the DTW path
-#         if self.cum_distance[idx_act,arg_min_row] <= self.cum_distance[arg_min_col,idx_est]:
-#             best_path = CellList([idx_act], [arg_min_row])
-#             idx_est = arg_min_row
-#         else:
-#             best_path = CellList([arg_min_col], [idx_est])
-#             idx_act = arg_min_col
-#             
-#         # Iterate until the starting point
-#         while idx_act > 0 or idx_est > 0:
-#             cells = self.find_cells(idx_act, idx_est)  
-#             best_path_local = self.find_best_path(cells, False)
-#             (idx_act, idx_est) = best_path_local.get_cell_as_tuple(0) 
-#             best_path.append(best_path_local)
-#             
-#         # Keep the best path for successive iterations
-#         # (the history of the best paths could be dropped at a later stage) 
-#         self.best_paths.append(best_path)
 
     def update_best_path(self):
         '''
@@ -318,19 +327,36 @@ class Matcher():
         self.best_paths.append(best_path)        
         
     def find_position(self):
-        self.position.append(self.best_paths[-1].rows[0] + 1) # Add 1 (as we count frames that have been processed)
-        self.position_sec.append(self.position[-1] * self.hop_length_act / float(self.sr_act))  
+#         self.position.append(self.best_paths[-1].rows[0] + 1) # Add 1 (as we count frames that have been processed)        
+        mean_distance = np.divide(self.cum_distance[0:self.idx_act+1,self.idx_est], np.arange(1, self.idx_act+2), dtype='float16')
+        self.position.append(np.nanargmin(mean_distance+1))
+        self.position_sec.append(self.position[-1] * self.hop_length_act / float(self.sr_act))
         
-    def plot(self, path_nb=-1):
+    def plot_dtw_distance(self, paths=[-1]):
         '''
         Plot the cumulative distance matrix as a heat map and the best path.
         
         path_nb is the number of the path we want to plot (-1 for the final path). 
         '''
         utils.plot_dtw_distance(self.cum_distance)
+
+        for k in paths:
+            plt.plot(self.best_paths[k].cols, self.best_paths[k].rows, color='black')
+            
+    def plot_chromagrams(self):
+        """
+        Plot both the estimated and the actual chromagram for comparison.
+        """
         
-        if path_nb is not None:
-            plt.plot(self.best_paths[path_nb].cols, self.best_paths[-1].rows, color='black')     
+        axarr = plt.subplots(2, 1)[1]
+        
+        # Plot chromagram_act
+        utils.plot_chromagram(self.chromagram_act, sr=self.sr_act, hop_length=self.hop_length_act, ax=axarr[0], xticks_sec=True)
+        axarr[0].set_title('Chromagram act')
+        
+        # Plot chromagram_est (up to idx_est). Will need to amend to sr_est and hop_length_est at some point...
+        utils.plot_chromagram(self.chromagram_est[0:self.idx_est,:], sr=self.sr_act, hop_length=self.hop_length_act, ax=axarr[1], xticks_sec=True)
+        axarr[1].set_title('Chromagram est')                         
                                                         
     def main_matcher(self, chromagram_est_row): 
         '''
@@ -339,16 +365,6 @@ class Matcher():
         
         # Store the new chromagram
         self.chromagram_est[self.idx_est+1, :] = chromagram_est_row
-        
-#         # Disable the matching procedure if we are at the end of the act data
-#         # In that case, we keep updating the best path (keeping idx_act to the last act value)
-#         if self.idx_act >= self.len_chromagram_act - 1:
-#             self.idx_est += 1 # Increment the estimated position nonetheless
-#             best_path = copy.copy(self.best_paths[-1])
-#             best_path.prepend(CellList([self.idx_act],[self.idx_est]))
-#             self.best_paths.append(best_path)
-#             self.find_position()
-#             return
                                     
         self.input_advanced = False
         # Run the main loop
@@ -372,41 +388,7 @@ class Matcher():
         if self.idx_act > 0 or self.idx_est > 0:                
             self.update_best_path()
             self.find_position()
-            
-class MatcherMidi():
-    '''
-    Offline DTW to align MIDI files. The mid-level feature used is the piano-roll representation
-    (does not require the used instrument to be a piano)    
-    '''
-     
-    def __init__(self, wd, filename1, filename2):
-         
-        self.midi_band = (0, 127) # the range of possible Midi notes
-        self.dt = 0.1 # the time resolution
-         
-        # Set up the mid-level features used for matching 
-        self.piano_roll1 = midiread(wd + filename1, r=self.midi_band, dt=self.dt).piano_roll
-        self.piano_roll2 = midiread(wd + filename2, r=self.midi_band, dt=self.dt).piano_roll
-         
-    def build_aligned_midi(self, wd, filename1, filename2):
-         
-        # Reconstruct the aligned piano rolls   
-        self.aligned_piano_roll1 = self.piano_roll1[self.path[0],:]
-        self.aligned_piano_roll2 = self.piano_roll2[self.path[1],:]
-         
-        # Reconstruct the aligned midis      
-        midiwrite(wd + filename1, self.aligned_piano_roll1, r=self.midi_band, dt=self.dt)
-        midiwrite(wd + filename2, self.aligned_piano_roll2, r=self.midi_band, dt=self.dt)
-         
-         
-    def main_matcher(self):
-                 
-        # Run the DTW matching algorithm
-        distance_tot, distance_matrix, best_path = dtw.dtw(self.piano_roll1, self.piano_roll2, utils.distance_midi_cosine)
-        self.distance_tot = distance_tot
-        self.distance_matrix = distance_matrix
-        self.path = best_path       
-        
+
 class MatcherEvaluator():
     """
     Class to evaluate the score following procedure.
@@ -428,11 +410,14 @@ class MatcherEvaluator():
         
         # Build the corruption configs
         self.corrupt_configs = [
+#             {'warp_func':corrupt_midi.warp_sine, 'warp_func_args':{'nb_wave' : None}},
+            {'warp_func':corrupt_midi.warp_sine, 'warp_func_args':{'nb_wave' : 10.0}}
 #             {'warp_func':corrupt_midi.warp_linear, 'warp_func_args':{'multiplier' : 0.8}},
-            {'warp_func':corrupt_midi.warp_linear, 'warp_func_args':{'multiplier' : 1.5}},                                
+#             {'warp_func':corrupt_midi.warp_linear, 'warp_func_args':{'multiplier' : 1.5}},                                
 #             {'velocity_std':0.5},
 #             {'velocity_std':2.0},
 #             {},
+#             {'warp_func':corrupt_midi.warp_linear, 'warp_func_args':{'multiplier' : 2.0/3.0}},
             ]
         self.filenames_wav_corrupt = [] # Placeholder the list of corrupted filenames
         self.matchers = [] # Placeholder for the matchers. May be removed at a later stage (for reporting only)... 
@@ -480,6 +465,8 @@ class MatcherEvaluator():
         # Loop over the configs
         for filename_wav_corrupt in self.filenames_wav_corrupt:
             
+            print('Aligning {}'.format(filename_wav_corrupt))
+            
             # Copy the matcher as it will be modified
             matcher_tmp = copy.deepcopy(matcher)
             
@@ -502,7 +489,7 @@ class MatcherEvaluator():
             self.times_est_all.append(np.array([times_cor_est, times_ori_est]).T)
             
             # Keep the matchers (for reporting only, may be removed at a later stage)
-#             self.matchers.append(matcher_tmp)            
+            self.matchers.append(matcher_tmp)            
                 
     def evaluate(self):
         '''
@@ -516,9 +503,9 @@ class MatcherEvaluator():
         Plot the alignment error for all the corruption configs.
         '''
         nbConf = len(self.corrupt_configs)
-        axarr = plt.subplots(int(ceil(nbConf/2.0)), min(nbConf, 2))[1]
-        for cnt, config in enumerate(self.corrupt_configs):
-            ax = axarr[int(floor(cnt/2.0)), cnt%2 ]
+        axarr = plt.subplots(int(ceil(nbConf/2.0)), min(nbConf, 2), squeeze=False)[1]
+        for cnt, config in enumerate(self.corrupt_configs):          
+            ax = axarr[int(floor(cnt/2.0)), cnt%2 ]                
             ax.plot(self.alignement_stats[cnt])
             ax.set_title(str(config))
         

@@ -242,7 +242,7 @@ def plot_chromagram(chromagram, sr=1.0, hop_length=1.0, ax=None, xticks_sec=True
     
     if xticks_sec:
         # Set the x axis to seconds
-        xticks = np.linspace(0, chromagram.shape[0], 10)
+        xticks = np.linspace(0, chromagram.shape[0], 200)
         ax.set_xticks(xticks, minor=False)  
         ax.set_xticklabels(map(lambda x: "%0.1f" % x, xticks * hop_length / float(sr)), minor=False)
     
@@ -353,15 +353,48 @@ def calc_alignment_stats(times_cor_est, times_ori_est, times_cor_act, times_ori_
     times_cor_act : np.ndarray
         The ground-truth timestamps in the original .wav.        
     
+    Returns
+    -------
+    alignment_error  : np.ndarray 
+        The alignment error, for each times_cor_est point.
+        
     """ 
     if len(times_cor_est) != len(times_ori_est) or len(times_cor_act) != len(times_ori_act): raise ValueError('Input times not matching')  
     
     # Interpolate the times_ori_act values. Extrapolation may need to be added later
-    times_ori_act_interp = np.interp(times_cor_est, times_cor_act, times_ori_act)
+#     times_ori_act_interp = np.interp(times_cor_est, times_cor_act, times_ori_act)
+    times_ori_act_interp = find_alignment_times(times_cor_est, times_cor_act, times_ori_act)
     
     # Compute the alignment errors as the difference between 
     # estimate vs actual times in the original score
     alignment_error = times_ori_est - times_ori_act_interp
     
     return(alignment_error)
+
+def find_alignment_times(times_cor_est, times_cor_act, times_ori_act):
+    """
+    For some input times, referring to the estimated corrupted times, return 
+    the "true" times in the original data.
+    
+    Parameters
+    ----------
+    times_cor_est : np.ndarray
+        The output times of the alignment procedure (timestamps in the corrupted .wav).       
+    times_cor_act : np.ndarray
+        The ground-truth timestamps in the corrupted .wav.
+    times_cor_act : np.ndarray
+        The ground-truth timestamps in the original .wav.        
+    
+    Returns
+    -------
+    times_ori_act_interp  : np.ndarray 
+        The matching times in the original data.   
+     
+    """
+    if len(times_cor_act) != len(times_ori_act): raise ValueError('Input times not matching')
+    
+    # Interpolate the times_ori_act values. Extrapolation may need to be added later
+    times_ori_act_interp = np.interp(times_cor_est, times_cor_act, times_ori_act)
+    
+    return(times_ori_act_interp)
 
