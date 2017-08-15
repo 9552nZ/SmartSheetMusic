@@ -87,7 +87,7 @@ class Matcher():
     https://code.soundsoftware.ac.uk/projects/match/repository/entry/at/ofai/music/match/Finder.java
     '''
     
-    def __init__(self, wd, filename, sr, n_fft, hop_length):                
+    def __init__(self, wd, filename, sr, n_fft, hop_length, diag_cost=1.5, use_low_memory=True):                
                 
         # Load the .wav file and turn into chromagram
         self.set_chromagram(wd, filename, sr, n_fft, hop_length)
@@ -103,8 +103,8 @@ class Matcher():
         
         # DTW parameters
         self.search_width = 100 # width of the band to search the optimal alignment (in frames)
-        self.min_data = 100 # min number of input frames to compute before doing anything        
-        self.diag_cost = 1.0 # the cost for the diagonal (1.0<=x<=2.0, may be set to less than 2 to let the algorithm favour diagonal moves) 
+        self.min_data = 20 # min number of input frames to compute before doing anything        
+        self.diag_cost = diag_cost # the cost for the diagonal (1.0<=x<=2.0, may be set to less than 2 to let the algorithm favour diagonal moves) 
         
         # Boolean to check if the new input has been processed
         self.input_advanced = False
@@ -118,6 +118,9 @@ class Matcher():
         # Initialise the best_paths, in order to keep the best path at each iteration
         # (one iteration correspond to one update of the live feed)
         self.best_paths = []
+        
+        # Check if we need to store the best paths
+        self.use_low_memory = use_low_memory
         
     def set_chromagram(self, wd, filename, sr, n_fft, hop_length):
         '''        
@@ -297,7 +300,8 @@ class Matcher():
             idx_act = self.idx_act
             idx_est = self.idx_est
             
-            for k in np.arange(max(idx_act-self.search_width+1, 0), idx_act+1): #max(idx_act-self.search_width+1, 0) ???
+            for k in np.arange(max(idx_act-self.search_width+1, 0), idx_act+1):
+#             for k in np.arange(max(idx_act-self.search_width/2+1, 0), min(idx_act+self.search_width/2+1, self.len_chromagram_act)): # VERIFY!!!
                 distance = utils.distance_chroma(self.chromagram_act[k, :], self.chromagram_est[idx_est, :], 1, 12)
                 cells = self.find_cells(k, idx_est)
                 self.cum_distance[k, idx_est] = distance + self.find_best_path(cells, True)
@@ -326,10 +330,12 @@ class Matcher():
         # (the history of the best paths could be dropped at a later stage) 
         self.best_paths.append(best_path)        
         
-    def find_position(self):
-#         self.position.append(self.best_paths[-1].rows[0] + 1) # Add 1 (as we count frames that have been processed)        
-        mean_distance = np.divide(self.cum_distance[0:self.idx_act+1,self.idx_est], np.arange(1, self.idx_act+2), dtype='float16')
-        self.position.append(np.nanargmin(mean_distance+1))
+    def update_position(self):        
+        '''
+        Append idx_act to the list of estimated positions (and the equivalent in seconds). 
+        '''
+        
+        self.position.append(self.idx_act)
         self.position_sec.append(self.position[-1] * self.hop_length_act / float(self.sr_act))
         
     def plot_dtw_distance(self, paths=[-1]):
@@ -374,20 +380,22 @@ class Matcher():
             # In that case, we keep updating the best path (keeping idx_act to the last act value)
             if self.idx_act >= self.len_chromagram_act - 1:
                 self.idx_est += 1 # Increment the estimated position nonetheless
-                best_path = copy.copy(self.best_paths[-1])
-                best_path.prepend(CellList([self.idx_act],[self.idx_est]))
-                self.best_paths.append(best_path)
-                self.find_position()
+                self.update_position()
                 return
                      
             direction = self.select_advance_direction()
-            self.update_cum_distance(direction)   
+            self.update_cum_distance(direction)        
             
         # Find the best path and the current position
         # Do not run if we are at the starting point
-        if self.idx_act > 0 or self.idx_est > 0:                
-            self.update_best_path()
-            self.find_position()
+        if (self.idx_act > 0 or self.idx_est > 0):                    
+            
+            # Update the estimated current position
+            self.update_position()  
+            
+            if not self.use_low_memory:                
+                self.update_best_path()
+            
 
 class MatcherEvaluator():
     """
@@ -396,7 +404,7 @@ class MatcherEvaluator():
     2) Perform alignment for each
     3) Compute the difference between ground-truth and estimated positions
     """     
-    def __init__(self, wd, filename_midi):
+    def __init__(self, wd, filename_midi, config_matcher={}):
         
         self.wd = wd
         self.filename_midi_act = filename_midi
@@ -406,21 +414,22 @@ class MatcherEvaluator():
         self.times_ori_act = np.linspace(0.0, self.len_act_sec, int(self.len_act_sec/0.01)) # The reference timestamps in the original data
         self.times_est_all = [] # Placeholder for the output times of the alignment procedure [corrupted, original]
         self.times_cor_act_all = [] # Placeholder for the corrupted times (ground-truth)
-        self.alignement_stats = [] # Placeholder for the output of the evaluation procedure 
-        
+        self.alignement_stats = [] # Placeholder for the output of the evaluation procedure
+                 
         # Build the corruption configs
         self.corrupt_configs = [
 #             {'warp_func':corrupt_midi.warp_sine, 'warp_func_args':{'nb_wave' : None}},
-            {'warp_func':corrupt_midi.warp_sine, 'warp_func_args':{'nb_wave' : 10.0}}
-#             {'warp_func':corrupt_midi.warp_linear, 'warp_func_args':{'multiplier' : 0.8}},
-#             {'warp_func':corrupt_midi.warp_linear, 'warp_func_args':{'multiplier' : 1.5}},                                
-#             {'velocity_std':0.5},
-#             {'velocity_std':2.0},
+            {'warp_func':corrupt_midi.warp_sine, 'warp_func_args':{'nb_wave' : 5.0}},
+            {'warp_func':corrupt_midi.warp_linear, 'warp_func_args':{'multiplier' : 0.8}},
+            {'warp_func':corrupt_midi.warp_linear, 'warp_func_args':{'multiplier' : 1.25}},                                
+            {'velocity_std':0.5},
+            {'velocity_std':2.0},
 #             {},
-#             {'warp_func':corrupt_midi.warp_linear, 'warp_func_args':{'multiplier' : 2.0/3.0}},
             ]
         self.filenames_wav_corrupt = [] # Placeholder the list of corrupted filenames
-        self.matchers = [] # Placeholder for the matchers. May be removed at a later stage (for reporting only)... 
+        self.matchers = [] # Placeholder for the matchers. May be removed at a later stage (for reporting only)...
+        self.times_rests = [] # Placeholder for the starting and ending rests of the corrupted track
+        self.config_matcher = config_matcher # Config to override the matcher's parameters  
         
     def corrupt(self):
         '''
@@ -460,7 +469,7 @@ class MatcherEvaluator():
         utils.write_wav(self.wd + self.filename_wav_act, pretty_midi.PrettyMIDI(self.wd + self.filename_midi_act).fluidsynth(self.sr), rate = self.sr)
         
         # Initialise the matcher
-        matcher = Matcher(self.wd, self.filename_wav_act, self.sr, n_fft, hop_length)
+        matcher = Matcher(self.wd, self.filename_wav_act, self.sr, n_fft, hop_length, **self.config_matcher)
         
         # Loop over the configs
         for filename_wav_corrupt in self.filenames_wav_corrupt:
@@ -473,7 +482,11 @@ class MatcherEvaluator():
             # Load the audio data
             audio_data_est = lb.core.load(self.wd + filename_wav_corrupt, sr = matcher_tmp.sr_act)[0]
             
-            # Compute the chromagram, use the engine of the matcher to ensure both chromagram have 
+            # Find the starting and ending rests
+            rests = utils.find_start_end_rests(audio_data_est, matcher_tmp.sr_act, matcher_tmp.hop_length_act, matcher_tmp.n_fft_act)
+            self.times_rests.append(rests)
+            
+            # Compute the chromagram, use the engine of the matcher to ensure that both chromagrams have 
             # been computed with the same procedure.
             chromagram_est = Matcher.compute_chromagram(audio_data_est, self.sr, n_fft, hop_length)
             
@@ -496,7 +509,33 @@ class MatcherEvaluator():
         Loop over the corruption configs and calculate the alignment stats.
         '''
         for cnt, times_est in enumerate(self.times_est_all):
-            self.alignement_stats.append(utils.calc_alignment_stats(times_est[:,0], times_est[:,1], self.times_cor_act_all[cnt], self.times_ori_act))
+            
+            times_cor_est = times_est[:,0]
+            times_ori_est = times_est[:,1]            
+            
+            # Compute the alignment error for all the times_cor_est times.
+            alignment_error_raw = utils.calc_alignment_stats(times_cor_est, times_ori_est, self.times_cor_act_all[cnt], self.times_ori_act)
+            
+            # Extract the values that correspond to the times after the starting rest and before 
+            # the finishing rest.  
+            mask = np.logical_and(times_cor_est >= self.times_rests[cnt][0], times_cor_est <= self.times_rests[cnt][1])               
+            alignment_error = alignment_error_raw[mask]
+            
+            # Compute the aggregate metrics
+            mean_error = np.mean(alignment_error)
+            mean_abs_error = np.mean(np.absolute(alignment_error))
+            prctile_error = np.percentile(alignment_error, np.array([0.0, 1.0, 5.0, 50.0, 95.0, 99.0, 100.0]))
+                                       
+            alignement_stats = {
+                'alignment_error_raw':alignment_error_raw,
+                'alignment_error':alignment_error,
+                'mean_error':mean_error,
+                'mean_abs_error':mean_abs_error,
+                'prctile_error':prctile_error,
+                'idx_config_corruption':cnt                              
+                } 
+             
+            self.alignement_stats.append(alignement_stats)
             
     def plot_alignment_error(self):
         '''
@@ -506,7 +545,7 @@ class MatcherEvaluator():
         axarr = plt.subplots(int(ceil(nbConf/2.0)), min(nbConf, 2), squeeze=False)[1]
         for cnt, config in enumerate(self.corrupt_configs):          
             ax = axarr[int(floor(cnt/2.0)), cnt%2 ]                
-            ax.plot(self.alignement_stats[cnt])
+            ax.plot(self.alignement_stats[cnt]['alignment_error_raw'])
             ax.set_title(str(config))
         
     def main_evaluation(self):
