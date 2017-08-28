@@ -9,6 +9,7 @@ from math import floor, ceil
 import dtw
 import copy
 import matplotlib.pyplot as plt
+import config
             
 class MatcherMidi():
     '''
@@ -87,10 +88,34 @@ class Matcher():
     https://code.soundsoftware.ac.uk/projects/match/repository/entry/at/ofai/music/match/Finder.java
     '''
     
-    def __init__(self, wd, filename, sr, n_fft, hop_length, diag_cost=1.5, use_low_memory=True):                
-                
+#     def __init__(self, wd, filename, sr, n_fft, hop_length, 
+#                  diag_cost=1.2,
+#                  compute_chromagram_fcn = lb.feature.chroma_stft,
+#                  compute_chromagram_fcn_kwargs = {}, 
+#                  use_low_memory=True):
+    def __init__(self, wd, filename, sr, hop_length, 
+                 diag_cost=1.2,
+                 compute_chromagram_fcn = lb.feature.chroma_stft,                 
+                 compute_chromagram_fcn_kwargs = {}, 
+                 chromagram_mode = 0,
+                 use_low_memory=True): 
+        
+        # Start by fixing the sample rate and hop size for the spectrum
+        # decomposition
+        self.sr_act = sr
+#         self.n_fft_act = n_fft
+        self.hop_length_act = hop_length   
+        
+        # Set the function used to compute the chromagram and its parameters
+        self.compute_chromagram_fcn = compute_chromagram_fcn
+        self.compute_chromagram_fcn_kwargs = compute_chromagram_fcn_kwargs
+        self.chromagram_mode = chromagram_mode
+        
+        # Check if we need to store the chromagram to disk and retrieve it when it exists
+        self.store_chromagram = False  
+        
         # Load the .wav file and turn into chromagram
-        self.set_chromagram(wd, filename, sr, n_fft, hop_length)
+        self.set_chromagram(wd, filename)
                 
         # Current position in the act / est data
         # Set to -1 as no data has been processed
@@ -122,46 +147,70 @@ class Matcher():
         # Check if we need to store the best paths
         self.use_low_memory = use_low_memory
         
-    def set_chromagram(self, wd, filename, sr, n_fft, hop_length):
+
+        
+    def set_chromagram(self, wd, filename):
         '''        
         Get the chromagram from the disk or process the .wav file and write 
-        the chromagram to disk
-        '''
+        the chromagram to disk if need be.
+        '''        
 
-        filename_chomagram = wd + utils.unmake_file_format(filename, '.wav') + "_chromagram_S{}_W{}_H{}.npy".format(sr, n_fft, hop_length) 
+        suffix_filename = "_chromagram_S{}_H{}_fcn{}_mode{}_.npy".format(self.sr_act, 
+                                                                         self.hop_length_act,
+                                                                         self.compute_chromagram_fcn.__name__, 
+                                                                         self.chromagram_mode)
+                                                                                                                                                                                                             
         
-        if os.path.isfile(filename_chomagram):
+        filename_chomagram = wd + utils.unmake_file_format(filename, '.wav') + suffix_filename
+        
+        if os.path.isfile(filename_chomagram) and self.store_chromagram:
             self.chromagram_act = np.load(filename_chomagram)
         else:
-            audio_data_wav = lb.core.load(wd + utils.make_file_format(filename, '.wav'), sr = sr)
-            self.chromagram_act = Matcher.compute_chromagram(audio_data_wav[0], sr, n_fft, hop_length)
-            np.save(filename_chomagram, self.chromagram_act)            
+            audio_data_wav = lb.core.load(wd + utils.make_file_format(filename, '.wav'), sr = self.sr_act)
+#             self.chromagram_act = Matcher.compute_chromagram(audio_data_wav[0], 
+#                                                              self.compute_chromagram_fcn, self.compute_chromagram_fcn_kwargs,                                                             
+#                                                              self.sr_act, self.n_fft_act, self.hop_length_act)
+            self.chromagram_act = Matcher.compute_chromagram(audio_data_wav[0], 
+                                                             self.sr_act,
+                                                             self.hop_length_act,
+                                                             self.compute_chromagram_fcn, 
+                                                             self.compute_chromagram_fcn_kwargs,
+                                                             self.chromagram_mode)                                                                                                                                                                                         
+            if self.store_chromagram:                                                 
+                np.save(filename_chomagram, self.chromagram_act)            
         
-        self.sr_act = sr
-        self.n_fft_act = n_fft
-        self.hop_length_act = hop_length
+
         self.len_chromagram_act_sec = self.chromagram_act.shape[0] * self.hop_length_act / float(self.sr_act)
         self.len_chromagram_act = self.chromagram_act.shape[0]
         self.nb_feature_chromagram = self.chromagram_act.shape[1]
         
     @staticmethod
-    def compute_chromagram(y, sr, n_fft, hop_length):
+    def compute_chromagram(y, sr, hop_length, compute_chromagram_fcn, compute_chromagram_fcn_kwargs, mode):
+        '''
+        Wrapper function to compute the chromagram.
+        mode = 0: Return the raw chromagram
+        mode = 1: Return the d_chromagram, i.e. the positive (time) difference
+        mode = 2: Return [chromagram, d_chromagram] 
+        '''
         
-#         chromagram = lb.feature.chroma_cens(y=np.array(y), 
-#                                             win_len_smooth=1, 
-#                                             sr=sr, 
-#                                             hop_length=hop_length, 
-#                                             chroma_mode='stft', 
-#                                             n_fft=n_fft, 
-#                                             tuning=0.0).T
-        chromagram = lb.feature.chroma_stft(y=np.array(y),  
-                                            sr=sr, 
-                                            hop_length=hop_length, 
-                                            n_fft=n_fft, 
-                                            tuning=0.0).T
-        
-        return(chromagram) 
-        
+        if not (mode==0 or mode==1 or mode==2): 
+            raise ValueError('Mode needs to be in {0, 1, 2}')
+
+        chromagram = compute_chromagram_fcn(y=np.array(y),
+                                            sr=sr,
+                                            hop_length=hop_length,
+                                            tuning=0.0,
+                                            **compute_chromagram_fcn_kwargs).T
+                                            
+        if mode == 0:
+            return(chromagram)
+        else:
+            d_chromagram = np.diff(chromagram, axis=0)
+            d_chromagram = np.maximum(d_chromagram, 0.0)
+            if mode == 1:
+                return(d_chromagram)
+            else:
+                return(np.hstack((chromagram[1:,:], d_chromagram)))        
         
     def select_advance_direction(self):        
         
@@ -270,7 +319,7 @@ class Matcher():
             self.idx_act += 1
             self.idx_est += 1
             self.cum_distance[self.idx_act, self.idx_est] = utils.distance_chroma(self.chromagram_act[self.idx_act, :], 
-                                                                                  self.chromagram_est[self.idx_est, :], 1, 12)
+                                                                                  self.chromagram_est[self.idx_est, :])
             self.input_advanced = True            
             return                        
         
@@ -288,7 +337,7 @@ class Matcher():
             idx_est = self.idx_est
             
             for k in np.arange(max(idx_est-self.search_width+1, 0), idx_est+1):                
-                distance = utils.distance_chroma(self.chromagram_act[idx_act, :], self.chromagram_est[k, :], 1, 12)                
+                distance = utils.distance_chroma(self.chromagram_act[idx_act, :], self.chromagram_est[k, :])                
                 cells = self.find_cells(idx_act, k)
                 self.cum_distance[idx_act, k] = distance + self.find_best_path(cells, True)                                                                 
             return
@@ -302,7 +351,7 @@ class Matcher():
             
             for k in np.arange(max(idx_act-self.search_width+1, 0), idx_act+1):
 #             for k in np.arange(max(idx_act-self.search_width/2+1, 0), min(idx_act+self.search_width/2+1, self.len_chromagram_act)): # VERIFY!!!
-                distance = utils.distance_chroma(self.chromagram_act[k, :], self.chromagram_est[idx_est, :], 1, 12)
+                distance = utils.distance_chroma(self.chromagram_act[k, :], self.chromagram_est[idx_est, :])
                 cells = self.find_cells(k, idx_est)
                 self.cum_distance[k, idx_est] = distance + self.find_best_path(cells, True)
             return
@@ -404,7 +453,7 @@ class MatcherEvaluator():
     2) Perform alignment for each
     3) Compute the difference between ground-truth and estimated positions
     """     
-    def __init__(self, wd, filename_midi, config_matcher={}):
+    def __init__(self, wd, filename_midi, config_matcher={}, configs_corrupt={}):
         
         self.wd = wd
         self.filename_midi_act = filename_midi
@@ -416,16 +465,9 @@ class MatcherEvaluator():
         self.times_cor_act_all = [] # Placeholder for the corrupted times (ground-truth)
         self.alignement_stats = [] # Placeholder for the output of the evaluation procedure
                  
-        # Build the corruption configs
-        self.corrupt_configs = [
-#             {'warp_func':corrupt_midi.warp_sine, 'warp_func_args':{'nb_wave' : None}},
-            {'warp_func':corrupt_midi.warp_sine, 'warp_func_args':{'nb_wave' : 5.0}},
-            {'warp_func':corrupt_midi.warp_linear, 'warp_func_args':{'multiplier' : 0.8}},
-            {'warp_func':corrupt_midi.warp_linear, 'warp_func_args':{'multiplier' : 1.25}},                                
-            {'velocity_std':0.5},
-            {'velocity_std':2.0},
-#             {},
-            ]
+        # Retrieve the corruption configs
+        self.corrupt_configs = configs_corrupt
+
         self.filenames_wav_corrupt = [] # Placeholder the list of corrupted filenames
         self.matchers = [] # Placeholder for the matchers. May be removed at a later stage (for reporting only)...
         self.times_rests = [] # Placeholder for the starting and ending rests of the corrupted track
@@ -444,8 +486,8 @@ class MatcherEvaluator():
             times_cor_act, diagnostics = corrupt_midi.corrupt_midi(midi_object_corrupt, self.times_ori_act, **config)
             self.times_cor_act_all.append(times_cor_act)
             
-            # Synthetise and store the .wav file
-            audio_data = midi_object_corrupt.fluidsynth(self.sr)
+            # Synthetise the .wav file
+            audio_data = midi_object_corrupt.fluidsynth(self.sr, start_new_process32=True)
             
             # Store the .wav data
             filename_wav_corrupt = utils.change_file_format(self.filename_midi_act, '.mid', '.wav', append = '_{}'.format(cnt))
@@ -461,15 +503,16 @@ class MatcherEvaluator():
         Keep the results of the alignment procedure.
         '''
         
-        n_fft = 2048
+#         n_fft = 2048
         hop_length = 1024
         
         # First, turn the original .mid file into .wav
         self.filename_wav_act = utils.change_file_format(self.filename_midi_act, '.mid', '.wav')
-        utils.write_wav(self.wd + self.filename_wav_act, pretty_midi.PrettyMIDI(self.wd + self.filename_midi_act).fluidsynth(self.sr), rate = self.sr)
+        utils.write_wav(self.wd + self.filename_wav_act, pretty_midi.PrettyMIDI(self.wd + self.filename_midi_act).fluidsynth(self.sr, start_new_process32=True), rate = self.sr)
         
         # Initialise the matcher
-        matcher = Matcher(self.wd, self.filename_wav_act, self.sr, n_fft, hop_length, **self.config_matcher)
+#         matcher = Matcher(self.wd, self.filename_wav_act, self.sr, n_fft, hop_length, **self.config_matcher)
+        matcher = Matcher(self.wd, self.filename_wav_act, self.sr, hop_length, **self.config_matcher)
         
         # Loop over the configs
         for filename_wav_corrupt in self.filenames_wav_corrupt:
@@ -483,12 +526,22 @@ class MatcherEvaluator():
             audio_data_est = lb.core.load(self.wd + filename_wav_corrupt, sr = matcher_tmp.sr_act)[0]
             
             # Find the starting and ending rests
-            rests = utils.find_start_end_rests(audio_data_est, matcher_tmp.sr_act, matcher_tmp.hop_length_act, matcher_tmp.n_fft_act)
+            rests = utils.find_start_end_rests(audio_data_est, matcher_tmp.sr_act) # No need to pass in hop_size and n_fft
             self.times_rests.append(rests)
             
             # Compute the chromagram, use the engine of the matcher to ensure that both chromagrams have 
             # been computed with the same procedure.
-            chromagram_est = Matcher.compute_chromagram(audio_data_est, self.sr, n_fft, hop_length)
+#             chromagram_est = Matcher.compute_chromagram(audio_data_est, 
+#                                                         matcher_tmp.compute_chromagram_fcn, 
+#                                                         matcher_tmp.compute_chromagram_fcn_kwargs, 
+#                                                         self.sr, n_fft, hop_length)
+
+            chromagram_est = Matcher.compute_chromagram(audio_data_est, 
+                                                        self.sr, 
+                                                        hop_length,                                                        
+                                                        matcher_tmp.compute_chromagram_fcn, 
+                                                        matcher_tmp.compute_chromagram_fcn_kwargs,
+                                                        matcher_tmp.chromagram_mode)                                                         
             
             # Run the online alignment, frame by frame
             nb_frames_est = chromagram_est.shape[0]
