@@ -17,6 +17,7 @@ using System.Runtime.InteropServices;
 using System.Windows.Forms;
 using System.Diagnostics;
 using MidiSheetMusic.Resources.Localization;
+using ZeroMQ;
 
 namespace MidiSheetMusic {
 
@@ -87,6 +88,8 @@ public class MidiPlayer : Panel  {
     Process timidity;           /** The Linux timidity process */
 
     private TextBox textBox;
+    Timer timerScoreFollowing;  
+    int scoreFollowingState;
 
     [DllImport("winmm.dll")]
     public static extern int mciSendString(string lpstrCommand,
@@ -129,6 +132,7 @@ public class MidiPlayer : Panel  {
         this.options = null;
         this.sheet = null;
         playstate = stopped;
+        scoreFollowingState = stopped;
         startTime = DateTime.Now.TimeOfDay;
         startPulseTime = 0;
         currentPulseTime = 0;
@@ -253,6 +257,14 @@ public class MidiPlayer : Panel  {
         timer.Enabled = false;
         timer.Interval = 100;  /* 100 millisec */
         timer.Tick += new EventHandler(TimerCallback);
+
+        tempSoundFile = "";
+
+        /* Initialize the timer used for score following */
+        timerScoreFollowing = new Timer();
+        timerScoreFollowing.Enabled = false;
+        timerScoreFollowing.Interval = 1000;  
+        timerScoreFollowing.Tick += new EventHandler(TimerCallbackScoreFollowing);
 
         tempSoundFile = "";
     }
@@ -734,6 +746,34 @@ public class MidiPlayer : Panel  {
         if (playstate == playing) {
             Volume.SetVolume(volumeBar.Value);
         }
+    }
+
+    /* The callback for the score follower.
+    */     
+    void TimerCallbackScoreFollowing(object sender, EventArgs args) {   
+        if (midifile == null || sheet == null) {
+            timerScoreFollowing.Stop();
+            playstate = stopped;
+            return;
+        }
+        else if (scoreFollowingState == initStop) {
+            timerScoreFollowing.Stop();/*
+            python.Kill();
+            python.Dispose();
+            context.Dispose();
+            subscriber.Dispose();*/
+
+            sheet.Invalidate();
+            piano.Invalidate();
+            return;
+        } 
+        /*
+        using(var replyFrame = subscriber.ReceiveFrame()){
+            //string reply = replyFrame.ReadString();
+            //int currentPulseTime = Int32.Parse(reply)+1000;
+            //int prevPulseTime = Int32.Parse(reply);
+            //sheet.ShadeNotes((int)currentPulseTime, (int)prevPulseTime, false);
+        }            */
     }
 
 }
