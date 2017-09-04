@@ -16,7 +16,7 @@ using System.Drawing;
 using System.Runtime.InteropServices;
 using System.Windows.Forms;
 using System.Diagnostics;
-using ZeroMQ;
+using MidiSheetMusic.Resources.Localization;
 
 namespace MidiSheetMusic {
 
@@ -60,15 +60,10 @@ public class MidiPlayer : Panel  {
     private Button playButton;   /** The play/pause button */
     private Button stopButton;   /** The stop button */
     private Button fastFwdButton;/** The fast forward button */
-    private Button scoreFollowingButton; /** The score following button */
     private Label speedLabel;    /** Label displaying the percent speed */
     private TrackBar speedBar;   /** The trackbar for controlling the playback speed */
     private TrackBar volumeBar;  /** The trackbar for controlling the volume */
     private ToolTip playTip;     /** The tooltip for the play button */
-    private TextBox textBox;
-
-    private ZContext context;
-    private ZSocket subscriber;
 
     int playstate;               /** The playing state of the Midi Player */
     const int stopped   = 1;     /** Currently stopped */
@@ -77,8 +72,6 @@ public class MidiPlayer : Panel  {
     const int initStop  = 4;     /** Transitioning from playing to stop */
     const int initPause = 5;     /** Transitioning from playing to pause */
 
-    int scoreFollowingState;
-
     MidiFile midifile;          /** The midi file to play */
     MidiOptions options;   /** The sound options for playing the midi file */
     string tempSoundFile;       /** The temporary midi filename currently being played */
@@ -86,14 +79,14 @@ public class MidiPlayer : Panel  {
     SheetMusic sheet;           /** The sheet music to shade while playing */
     Piano piano;                /** The piano to shade while playing */
     Timer timer;                /** Timer used to update the sheet music while playing */
-    Timer timerScoreFollowing;  /** Timer used for score following  */   
     TimeSpan startTime;         /** Absolute time when music started playing */
     double startPulseTime;      /** Time (in pulses) when music started playing */
     double currentPulseTime;    /** Time (in pulses) music is currently at */
     double prevPulseTime;       /** Time (in pulses) music was last at */
     StringBuilder errormsg;     /** Error messages from midi player */
     Process timidity;           /** The Linux timidity process */
-    Process python;
+
+    private TextBox textBox;
 
     [DllImport("winmm.dll")]
     public static extern int mciSendString(string lpstrCommand,
@@ -110,19 +103,19 @@ public class MidiPlayer : Panel  {
     private void loadButtonImages() {
         int buttonheight = this.Font.Height * 2;
         Size imagesize = new Size(buttonheight, buttonheight);
-        rewindImage = new Bitmap(typeof(MidiPlayer), "rewind.png");
+        rewindImage = new Bitmap(typeof(MidiPlayer), "Resources.Images.rewind.png");
         rewindImage = new Bitmap(rewindImage, imagesize);
-        playImage = new Bitmap(typeof(MidiPlayer), "play.png");
+        playImage = new Bitmap(typeof(MidiPlayer), "Resources.Images.play.png");
         playImage = new Bitmap(playImage, imagesize);
-        pauseImage = new Bitmap(typeof(MidiPlayer), "pause.png");
+        pauseImage = new Bitmap(typeof(MidiPlayer), "Resources.Images.pause.png");
         pauseImage = new Bitmap(pauseImage, imagesize);
-        stopImage = new Bitmap(typeof(MidiPlayer), "stop.png");
+        stopImage = new Bitmap(typeof(MidiPlayer), "Resources.Images.stop.png");
         stopImage = new Bitmap(stopImage, imagesize);
-        fastFwdImage = new Bitmap(typeof(MidiPlayer), "fastforward.png");
+        fastFwdImage = new Bitmap(typeof(MidiPlayer), "Resources.Images.fastforward.png");
         fastFwdImage = new Bitmap(fastFwdImage, imagesize);
-        volumeImage = new Bitmap(typeof(MidiPlayer), "volume.png");
+        volumeImage = new Bitmap(typeof(MidiPlayer), "Resources.Images.volume.png");
         volumeImage = new Bitmap(volumeImage, imagesize);
-        }
+    }
 
     /** Create a new MidiPlayer, displaying the play/stop buttons, the
      *  speed bar, and volume bar.  The midifile and sheetmusic are initially null.
@@ -136,8 +129,6 @@ public class MidiPlayer : Panel  {
         this.options = null;
         this.sheet = null;
         playstate = stopped;
-        scoreFollowingState = stopped;
-
         startTime = DateTime.Now.TimeOfDay;
         startPulseTime = 0;
         currentPulseTime = 0;
@@ -154,7 +145,7 @@ public class MidiPlayer : Panel  {
         rewindButton.Location = new Point(buttonheight/2, buttonheight/2);
         rewindButton.Click += new EventHandler(Rewind);
         tip = new ToolTip();
-        tip.SetToolTip(rewindButton, "Rewind");
+        tip.SetToolTip(rewindButton, Strings.rewind);
 
         /* Create the play button */
         playButton = new Button();
@@ -167,7 +158,7 @@ public class MidiPlayer : Panel  {
                                         rewindButton.Location.Y);
         playButton.Click += new EventHandler(PlayPause);
         playTip = new ToolTip();
-        playTip.SetToolTip(playButton, "Play");
+        playTip.SetToolTip(playButton, Strings.play);
 
         /* Create the stop button */
         stopButton = new Button();
@@ -179,7 +170,7 @@ public class MidiPlayer : Panel  {
                                         playButton.Location.Y);
         stopButton.Click += new EventHandler(Stop);
         tip = new ToolTip();
-        tip.SetToolTip(stopButton, "Stop");
+        tip.SetToolTip(stopButton, Strings.stop);
 
         /* Create the fastFwd button */        
         fastFwdButton = new Button();
@@ -191,30 +182,19 @@ public class MidiPlayer : Panel  {
                                           stopButton.Location.Y);
         fastFwdButton.Click += new EventHandler(FastForward);
         tip = new ToolTip();
-        tip.SetToolTip(fastFwdButton, "Fast Forward");
+        tip.SetToolTip(fastFwdButton, Strings.fastForward);
 
-        /* Create the score follower button */
-        scoreFollowingButton = new Button();
-        scoreFollowingButton.Parent = this;
-        scoreFollowingButton.Image = playImage;
-        scoreFollowingButton.ImageAlign = ContentAlignment.MiddleCenter;
-        scoreFollowingButton.Size = new Size(buttonheight, buttonheight);
-        scoreFollowingButton.Location = new Point(fastFwdButton.Location.X + fastFwdButton.Width + buttonheight / 2,
-                                            fastFwdButton.Location.Y);
 
-        scoreFollowingButton.Click += new EventHandler(StartScoreFollowing);
-        tip = new ToolTip();
-        tip.SetToolTip(scoreFollowingButton, "Start score following");
 
         /* Create the Speed bar */
         speedLabel = new Label();
         speedLabel.Parent = this;
-        speedLabel.Text = "Speed: 100%";
+        speedLabel.Text = Strings.speed + " : 100%";
         speedLabel.TextAlign = ContentAlignment.MiddleLeft;
         speedLabel.Height = buttonheight;
         speedLabel.Width = buttonheight*3;
-        speedLabel.Location = new Point(scoreFollowingButton.Location.X + scoreFollowingButton.Width + buttonheight/2,
-                                        scoreFollowingButton.Location.Y);
+        speedLabel.Location = new Point(fastFwdButton.Location.X + fastFwdButton.Width + buttonheight/2,
+                                        fastFwdButton.Location.Y);
 
         speedBar = new TrackBar();
         speedBar.Parent = this;
@@ -230,7 +210,7 @@ public class MidiPlayer : Panel  {
         speedBar.Scroll += new EventHandler(SpeedBarChanged);
 
         tip = new ToolTip();
-        tip.SetToolTip(speedBar, "Adjust the speed");
+        tip.SetToolTip(speedBar, Strings.speed);
 
         /* Create the Volume bar */
         Label volumeLabel = new Label();
@@ -255,7 +235,7 @@ public class MidiPlayer : Panel  {
                                        volumeLabel.Location.Y);
         volumeBar.Scroll += new EventHandler(ChangeVolume);
         tip = new ToolTip();
-        tip.SetToolTip(volumeBar, "Adjust the volume");
+        tip.SetToolTip(volumeBar, Strings.volume);
 
         Height = buttonheight*2;
 
@@ -264,21 +244,15 @@ public class MidiPlayer : Panel  {
         textBox.Height = buttonheight * 3;
         textBox.Width = buttonheight * 20;
         textBox.Location = new Point(volumeBar.Location.X + volumeBar.Width + 2,
-                                       volumeBar.Location.Y);
+                                        volumeBar.Location.Y);
 
         /* Initialize the timer used for playback, but don't start
-        * the timer yet (enabled = false).
-        */
+         * the timer yet (enabled = false).
+         */
         timer = new Timer();
         timer.Enabled = false;
         timer.Interval = 100;  /* 100 millisec */
         timer.Tick += new EventHandler(TimerCallback);
-
-        /* Initialize the timer used for score following */
-        timerScoreFollowing = new Timer();
-        timerScoreFollowing.Enabled = false;
-        timerScoreFollowing.Interval = 1000;  
-        timerScoreFollowing.Tick += new EventHandler(TimerCallbackScoreFollowing);
 
         tempSoundFile = "";
     }
@@ -494,7 +468,7 @@ public class MidiPlayer : Panel  {
      *  (The actual pause is done when the timer is invoked).
      */
     private void PlayPause(object sender, EventArgs args) {
-        if (midifile == null || sheet == null /*|| numberTracks() == 0*/) {
+        if (midifile == null || sheet == null || numberTracks() == 0) {
             return;
         }
         else if (playstate == initStop || playstate == initPause) {
@@ -639,56 +613,12 @@ public class MidiPlayer : Panel  {
         piano.ShadeNotes((int)currentPulseTime, (int)prevPulseTime);
     }
 
-    /** Start the score following algorithm.
-     */
-    private void StartScoreFollowing(object sender, EventArgs evt)
-    {        
-        if (midifile == null || sheet == null /*|| numberTracks() == 0*/) {
-            //bool midiNull = midifile == null;
-            //bool sheetNull = sheet == null;
-            //bool trackNull = numberTracks() == 0;//
-            //textBox.Text = midiNull.ToString() + sheetNull.ToString() + trackNull.ToString();
-            return;
-        }
-        else if (scoreFollowingState == playing) {
-            scoreFollowingState = initStop;
-            return;
-        }
-        else if (scoreFollowingState == stopped) {
-
-            string filenamePythonScript = "C:/Users/Alexis/Source/TestPython2/AutomaticAudioTranscript/start_score_following.py";
-
-            ProcessStartInfo info = new ProcessStartInfo();
-            //info.CreateNoWindow = true;
-            info.RedirectStandardOutput = true;
-            info.RedirectStandardInput = true;  
-            info.UseShellExecute = false;
-            info.FileName = "python64.exe";
-            info.Arguments = filenamePythonScript + " " + midifile.FileName;
-            python = new Process();
-            python.StartInfo = info;
-            python.Start();
-        
-            //Process.Start("python64.exe", filenamePythonScript + " " + midifile.FileName);
-
-            context = new ZContext();
-            subscriber = new ZSocket(context, ZSocketType.SUB);
-
-            subscriber.Connect("tcp://127.0.0.1:5555");
-            subscriber.Subscribe("");
-
-            scoreFollowingButton.Image = stopImage;
-            scoreFollowingState = playing;
-
-            timerScoreFollowing.Start();
-        }
-    }
 
     /** Move the current position to the location clicked.
-    *  The music must be in the paused/stopped state.
-    *  When we resume in playPause, we start at the currentPulseTime.
-    *  So, set the currentPulseTime to the position clicked.
-    */
+     *  The music must be in the paused/stopped state.
+     *  When we resume in playPause, we start at the currentPulseTime.
+     *  So, set the currentPulseTime to the position clicked.
+     */
     private void MoveToClicked(object sender, MouseEventArgs evt) {
         if (midifile == null || sheet == null) {
             return;
@@ -779,34 +709,6 @@ public class MidiPlayer : Panel  {
         }
     }
 
-    /* The callback for the score follower.
-     */     
-    void TimerCallbackScoreFollowing(object sender, EventArgs args) {   
-        if (midifile == null || sheet == null) {
-            timerScoreFollowing.Stop();
-            playstate = stopped;
-            return;
-        }
-        else if (scoreFollowingState == initStop) {
-            timerScoreFollowing.Stop();
-            python.Kill();
-            python.Dispose();
-            context.Dispose();
-            subscriber.Dispose();
-
-            sheet.Invalidate();
-            piano.Invalidate();
-            return;
-        }       
-
-        using(var replyFrame = subscriber.ReceiveFrame()){
-            //string reply = replyFrame.ReadString();
-            //int currentPulseTime = Int32.Parse(reply)+1000;
-            //int prevPulseTime = Int32.Parse(reply);
-            //sheet.ShadeNotes((int)currentPulseTime, (int)prevPulseTime, false);
-        }            
-    }
-    
     /** The "Play Measures in a Loop" feature is enabled, and we've reached
      *  the last measure. Stop the sound, unshade the music, and then
      *  start playing again.
