@@ -86,10 +86,17 @@ public class MidiPlayer : Panel  {
     double prevPulseTime;       /** Time (in pulses) music was last at */
     StringBuilder errormsg;     /** Error messages from midi player */
     Process timidity;           /** The Linux timidity process */
-
+    
+    ///////////////////////////////////////////////////////////////////
     private TextBox textBox;
     Timer timerScoreFollowing;  
     int scoreFollowingState;
+    private Button scoreFollowingButton;
+    Process python;
+    private ZContext context;
+    private ZSocket subscriber;
+
+    ///////////////////////////////////////////////////////////////////
 
     [DllImport("winmm.dll")]
     public static extern int mciSendString(string lpstrCommand,
@@ -188,7 +195,18 @@ public class MidiPlayer : Panel  {
         tip = new ToolTip();
         tip.SetToolTip(fastFwdButton, Strings.fastForward);
 
+        /* Create the score follower button */
+        scoreFollowingButton = new Button();
+        scoreFollowingButton.Parent = this;
+        scoreFollowingButton.Image = playImage;
+        scoreFollowingButton.ImageAlign = ContentAlignment.MiddleCenter;
+        scoreFollowingButton.Size = new Size(buttonheight, buttonheight);
+        scoreFollowingButton.Location = new Point(fastFwdButton.Location.X + fastFwdButton.Width + buttonheight / 2,
+                                            fastFwdButton.Location.Y);
 
+        scoreFollowingButton.Click += new EventHandler(StartScoreFollowing);
+        tip = new ToolTip();
+        tip.SetToolTip(scoreFollowingButton, "Start score following");
 
         /* Create the Speed bar */
         speedLabel = new Label();
@@ -197,8 +215,8 @@ public class MidiPlayer : Panel  {
         speedLabel.TextAlign = ContentAlignment.MiddleLeft;
         speedLabel.Height = buttonheight;
         speedLabel.Width = buttonheight*3;
-        speedLabel.Location = new Point(fastFwdButton.Location.X + fastFwdButton.Width + buttonheight/2,
-                                        fastFwdButton.Location.Y);
+        speedLabel.Location = new Point(scoreFollowingButton.Location.X + scoreFollowingButton.Width + buttonheight/2,
+                                        scoreFollowingButton.Location.Y);
 
         speedBar = new TrackBar();
         speedBar.Parent = this;
@@ -745,6 +763,51 @@ public class MidiPlayer : Panel  {
     private void ChangeVolume(object sender, EventArgs args) {
         if (playstate == playing) {
             Volume.SetVolume(volumeBar.Value);
+        }
+    }
+
+    /** Start the score following algorithm.
+     */
+    private void StartScoreFollowing(object sender, EventArgs evt)
+    {        
+        if (midifile == null || sheet == null /*|| numberTracks() == 0*/) {
+            //bool midiNull = midifile == null;
+            //bool sheetNull = sheet == null;
+            //bool trackNull = numberTracks() == 0;//
+            //textBox.Text = midiNull.ToString() + sheetNull.ToString() + trackNull.ToString();
+            return;
+        }
+        else if (scoreFollowingState == playing) {
+            scoreFollowingState = initStop;
+            return;
+        }
+        else if (scoreFollowingState == stopped) {
+            
+            string filenamePythonScript = "C:/Users/Alexis/Source/TestPython2/AutomaticAudioTranscript/start_score_following.py";
+
+            ProcessStartInfo info = new ProcessStartInfo();
+            //info.CreateNoWindow = true;
+            info.RedirectStandardOutput = true;
+            info.RedirectStandardInput = true;  
+            info.UseShellExecute = false;
+            info.FileName = "python64.exe";
+            info.Arguments = filenamePythonScript + " " + midifile.FileName;
+            python = new Process();
+            python.StartInfo = info;
+            python.Start();
+        
+            //Process.Start("python64.exe", filenamePythonScript + " " + midifile.FileName);
+
+            context = new ZContext();
+            subscriber = new ZSocket(context, ZSocketType.SUB);
+
+            subscriber.Connect("tcp://127.0.0.1:5555");
+            subscriber.Subscribe("");
+
+            scoreFollowingButton.Image = stopImage;
+            scoreFollowingState = playing;
+
+            timerScoreFollowing.Start();
         }
     }
 
