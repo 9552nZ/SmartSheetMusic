@@ -95,6 +95,8 @@ public class MidiPlayer : Panel  {
     Process python;
     private ZContext context;
     private ZSocket subscriber;
+    private int currentPulseTimeScoreFollowing;
+    private int prevPulseTimeScoreFollowing;
 
     ///////////////////////////////////////////////////////////////////
 
@@ -143,7 +145,9 @@ public class MidiPlayer : Panel  {
         startTime = DateTime.Now.TimeOfDay;
         startPulseTime = 0;
         currentPulseTime = 0;
+        currentPulseTimeScoreFollowing = 0;        
         prevPulseTime = -10;
+        prevPulseTimeScoreFollowing = -10;
         errormsg = new StringBuilder(256);
         ToolTip tip;
 
@@ -204,7 +208,7 @@ public class MidiPlayer : Panel  {
         scoreFollowingButton.Location = new Point(fastFwdButton.Location.X + fastFwdButton.Width + buttonheight / 2,
                                             fastFwdButton.Location.Y);
 
-        scoreFollowingButton.Click += new EventHandler(StartScoreFollowing);
+        scoreFollowingButton.Click += new EventHandler(StartStopScoreFollowing);
         tip = new ToolTip();
         tip.SetToolTip(scoreFollowingButton, "Start score following");
 
@@ -281,7 +285,7 @@ public class MidiPlayer : Panel  {
         /* Initialize the timer used for score following */
         timerScoreFollowing = new Timer();
         timerScoreFollowing.Enabled = false;
-        timerScoreFollowing.Interval = 1000;  
+        timerScoreFollowing.Interval = 100;  
         timerScoreFollowing.Tick += new EventHandler(TimerCallbackScoreFollowing);
 
         tempSoundFile = "";
@@ -768,8 +772,9 @@ public class MidiPlayer : Panel  {
 
     /** Start the score following algorithm.
      */
-    private void StartScoreFollowing(object sender, EventArgs evt)
+    private void StartStopScoreFollowing(object sender, EventArgs evt)
     {        
+        textBox.Text = scoreFollowingState.ToString();
         if (midifile == null || sheet == null /*|| numberTracks() == 0*/) {
             //bool midiNull = midifile == null;
             //bool sheetNull = sheet == null;
@@ -783,12 +788,12 @@ public class MidiPlayer : Panel  {
         }
         else if (scoreFollowingState == stopped) {
             
+            // Create the python process to run the python code and start it
             string filenamePythonScript = "C:/Users/Alexis/Source/TestPython2/AutomaticAudioTranscript/start_score_following.py";
-
             ProcessStartInfo info = new ProcessStartInfo();
             //info.CreateNoWindow = true;
-            info.RedirectStandardOutput = true;
-            info.RedirectStandardInput = true;  
+            //info.RedirectStandardOutput = true;
+            //info.RedirectStandardInput = true;  
             info.UseShellExecute = false;
             info.FileName = "python64.exe";
             info.Arguments = filenamePythonScript + " " + midifile.FileName;
@@ -796,17 +801,17 @@ public class MidiPlayer : Panel  {
             python.StartInfo = info;
             python.Start();
         
-            //Process.Start("python64.exe", filenamePythonScript + " " + midifile.FileName);
-
+            // Create the ZQM socket, open the TCP port and start listening
             context = new ZContext();
             subscriber = new ZSocket(context, ZSocketType.SUB);
-
             subscriber.Connect("tcp://127.0.0.1:5555");
             subscriber.Subscribe("");
-
+            
+            // Change status to play mode
             scoreFollowingButton.Image = stopImage;
             scoreFollowingState = playing;
-
+            
+            // Start the timer
             timerScoreFollowing.Start();
         }
     }
@@ -816,27 +821,34 @@ public class MidiPlayer : Panel  {
     void TimerCallbackScoreFollowing(object sender, EventArgs args) {   
         if (midifile == null || sheet == null) {
             timerScoreFollowing.Stop();
-            playstate = stopped;
+            scoreFollowingState = stopped;
             return;
         }
         else if (scoreFollowingState == initStop) {
-            timerScoreFollowing.Stop();/*
+            timerScoreFollowing.Stop();            
+            scoreFollowingState = stopped;
+            scoreFollowingButton.Image = playImage;
+
             python.Kill();
             python.Dispose();
+            
+            subscriber.Dispose();
             context.Dispose();
-            subscriber.Dispose();*/
 
             sheet.Invalidate();
             piano.Invalidate();
             return;
         } 
-        /*
+        
         using(var replyFrame = subscriber.ReceiveFrame()){
-            //string reply = replyFrame.ReadString();
-            //int currentPulseTime = Int32.Parse(reply)+1000;
-            //int prevPulseTime = Int32.Parse(reply);
-            //sheet.ShadeNotes((int)currentPulseTime, (int)prevPulseTime, false);
-        }            */
+
+            string reply = replyFrame.ReadString();
+
+            prevPulseTimeScoreFollowing = currentPulseTimeScoreFollowing;
+            currentPulseTimeScoreFollowing = Int32.Parse(reply);
+            
+            sheet.ShadeNotes((int)currentPulseTimeScoreFollowing, (int)prevPulseTimeScoreFollowing, true);
+        }            
     }
 
 }
