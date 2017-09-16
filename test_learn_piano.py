@@ -3,6 +3,15 @@ import datetime
 import pandas as pd
 import numpy as np
 import csv
+import librosa as lb
+import pickle
+import os
+from sklearn.neural_network import MLPClassifier
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import classification_report,confusion_matrix
+
+# For pandas console priting. May be removed later
+pd.set_option('display.expand_frame_repr', False)
 
 def youtube_download_audio(yt_id, start_sec, length_sec, filename_wav_out):
     '''
@@ -93,33 +102,52 @@ def parse_audioset(filename_audioset):
     
     df = pd.DataFrame.from_dict({"yt_id":yt_id, "start_sec":start_sec, "end_sec":end_sec, "positive_labels":positive_labels})
     df = df[["yt_id", "start_sec", "end_sec", "positive_labels"]]
+    
+    # Clean the white space in the labels
+    df['positive_labels'] = df['positive_labels'].str.strip()
                 
     return(df)
 
-def build_dataset(df):
+def get_random_dataset(df):
     '''
     Based on the entire dataframe of the parsed AudioSet infos, we build a random sample
     with he desired characteristics.
     We build the sample with replacement.
-    ''' 
+    '''
+    
+    def filter_fun(row, target, strict_inclusion):
+        """ 
+        Apply this filter to find the target labels.
+        If strict_inclusion then true if all the positive_labels are in the target 
+        If NOT strict_inclusion then true if any of the positive label is in the target
+        """ 
+        positive_labels = row.positive_labels.split(',')
+        if strict_inclusion:            
+            idx_valid = all(x in target for x in positive_labels)
+        else:
+            idx_valid = any(x in target for x in positive_labels)
+                
+        return(idx_valid) 
     
     # Fix the seed for now
     np.random.seed(1)  
     
     # Total number of sample and the breakdown of the edsired samples
-    nb_sample_tot = 300
+    nb_sample_tot = 5000
+
     dataset_distribution = [
-        {"name": "Piano", "id": "/m/05r5c", "nb_sample":nb_sample_tot / 2},
-        {"name": "Silence", "id": "/m/028v0c", "nb_sample":nb_sample_tot / 6},
-        {"name": "Noise", "id": "/m/096m7z", "nb_sample":nb_sample_tot / 6},
-        {"name": "Speech", "id": "/m/09x0r", "nb_sample":nb_sample_tot / 6}
-    ]    
+        {"name": "Piano", "id": ['/m/05r5c', '/m/05148p4', '/m/01s0ps', '/m/013y1f'], "strict_inclusion": True, "nb_sample":nb_sample_tot / 2, "classification":1},
+        {"name": "Silence,Noise,Speech", "id": ['/m/028v0c', '/m/096m7z', '/m/09x0r'], "strict_inclusion": False, "nb_sample":nb_sample_tot / 2, "classification":0},
+    ]              
     
     # Build the output dataframe
     df_all = []
     for item in dataset_distribution:
-        # Extract the samples that contained the target label. They may have other extra labels
-        df_tmp = df.loc[lambda df_in: df_in.positive_labels.str.contains(item["id"]), :]
+        # Extract the samples that contained the target label. They may have other extra labels        
+        df_tmp = df.loc[df.apply(lambda row: filter_fun(row, item["id"], item["strict_inclusion"]), axis=1),:]
+        
+        # Add classication for later use
+        df_tmp = df_tmp.assign(classification=item["classification"])
         
         # Random sample with replacement
         idx_tgt = np.random.randint(0, len(df_tmp.index), item["nb_sample"])  
@@ -134,29 +162,148 @@ def build_dataset(df):
     
     return(df_all)
 
-# def extract_features
-                
-wd = "C:\\Users\\Alexis\\Business\\SmartSheetMusic\\\AudioSet\\"
-filename_wav_out_base = wd + "YoutubeSamples\\sample_{}.wav"
-filename_df_random_audioset = wd + "YoutubeSamples\\info.pkl"
-# filename_wav_out_base = "C:\\Users\\Alexis\\Business\\SmartSheetMusic\\\AudioSet\\YoutubeSamples\\sample_{}.wav"
-start_sec = 1.0
-length_sec = 10.0
-# filename_audioset = 'C:\Users\Alexis\Business\SmartSheetMusic\AudioSet\unbalanced_train_segments.csv'
-filename_audioset = wd + 'unbalanced_train_segments.csv'
-# filename_audioset = 'C:\Users\Alexis\Downloads\eval_segments.csv'
-
-df_audioset = parse_audioset(filename_audioset)
-df_random_audioset = build_dataset(df_audioset)
-
-errors_download = []
-filenames_wav = []
-for idx, row in df_random_audioset.iterrows():
-    filenames_wav.append(filename_wav_out_base.format(idx))
-    is_err = youtube_download_audio(row["yt_id"], row["start_sec"], row["end_sec"]-row["start_sec"], filenames_wav[-1])
-    errors_download.append(is_err)
+def main_build_dataset(filename_audioset, filename_df_random_audioset):
+    '''
+    Entry-point to:
+    1) Parse the AudioSet ".csv" file.
+    2) Extract some random samples with the desired properties.
+    3) Download these samples from Youtube.
+    '''
     
-df_random_audioset = df_random_audioset.assign(error_download=errors_download, filename_wav=filenames_wav)
-df_random_audioset.to_pickle(filename_df_random_audioset)
+    df_audioset = parse_audioset(filename_audioset)
+    df_random_audioset = get_random_dataset(df_audioset)
+    
+    filename_wav_out_base = wd_samples + "sample_{}.wav"
+    
+    valids = []
+    filenames_wav = []
+    for idx, row in df_random_audioset.iterrows():
+        filenames_wav.append(filename_wav_out_base.format(idx))
+        is_err = youtube_download_audio(row["yt_id"], row["start_sec"], row["end_sec"]-row["start_sec"], filenames_wav[-1])
+        valids.append(is_err)
+        
+    df_random_audioset = df_random_audioset.assign(valid=valids, filename_wav=filenames_wav)
+    df_random_audioset.to_pickle(filename_df_random_audioset)
 
-a = 1
+    return()
+
+def audio_data_from_disk(wd, df_info, sr, min_samples):
+    '''
+    Retrieve the data from disk if it exists, otherwise, reshape the ".wav" files, and
+    store them to disk.    
+    '''
+    
+    filename_all_data = "{}all_data.pkl".format(wd)
+    
+    # Retrieve the data from teh disk if it exists
+    if os.path.isfile(filename_all_data):
+        with open(filename_all_data, 'rb') as handle:
+            all_data = pickle.load(handle)
+    
+    else:            
+        valid_idxs = np.full(len(df_info), False, dtype=bool)
+        audio_data_wav_all = []
+        for idx, row in df_info.iterrows():
+            if row["valid"] :
+                if os.path.isfile(row["filename_wav"]):
+                    audio_data_wav = lb.core.load(row["filename_wav"], sr = sr)[0]
+                    
+                    # Discard the sample if is is not long enough
+                    if len(audio_data_wav) >= min_samples:
+                        
+                        # Trim the sample to the desired length 
+                        audio_data_wav = audio_data_wav[0:min_samples]
+                        
+                        # Append
+                        audio_data_wav_all.append(audio_data_wav)
+                        valid_idxs[idx] =True
+                else:
+                    # All the files with row["valid"] = True should be there, 
+                    # print if this is not he case
+                    print "File {} is missing".format(row["filename_wav"])
+                    
+        # Extract valid indices
+        df_info = df_info.loc[valid_idxs]
+        classification = df_info.classification.as_matrix()
+        
+        # Stack all the audio into a np array
+        audio_data_wav_all = np.vstack(audio_data_wav_all)  
+        all_data = {"classification": classification, "audio_data":audio_data_wav_all, "df_info":df_info}                 
+        
+        # Store to disk
+        with open(filename_all_data, 'wb') as handle:
+            pickle.dump(all_data, handle, protocol=pickle.HIGHEST_PROTOCOL)
+            
+    return((all_data["classification"], all_data["audio_data"], all_data["df_info"]))    
+
+def extract_features(wd, df_info, n_chroma = 12, framewise_features=False):
+     
+    sr = 11025
+    hop_length = 1024
+    features = []
+
+    # We need to get exactly the same sample length.
+    # Hence, we either take the first min_secsseconds of the sample 
+    # if it it long enough, or we discard the sample entirely. 
+    min_secs = 9 
+    min_samples = min_secs*sr
+    nb_feature = min_samples/hop_length+1 # The expected size of the chroma_cqt function
+    
+    (classification, audio_data, df_info) = audio_data_from_disk(wd_samples, df_info, sr, min_samples)
+    
+    for k in range(audio_data.shape[0]):
+        # Extract the relevant features
+        feature = lb.feature.chroma_cqt(y=audio_data[k,:], sr=sr, hop_length=hop_length, norm=None, n_chroma=n_chroma)
+        
+        # Make sure that the  features have the same size for each sample
+        if feature.shape != (n_chroma, nb_feature): 
+            raise ValueError("Chromagram size not valid")
+        
+        # Append
+        features.append(feature)
+        
+    if framewise_features:
+        # We transpose the features and duplicate the clasification flags
+        features = map(lambda x: x.T, features)
+        classification = np.repeat(classification, nb_feature)
+    else:
+        # For n features and tk times, we reshape to 1D so as to get: 
+        # [f(1, t1), f(2, t1),..., f(n, t1), f(1, t2), ..., f(n, t2), ...., f(1, tk), ..., f(n, tk)]  
+        features = map(lambda x: np.reshape(x.T, (min_samples/hop_length+1) * n_chroma), features)
+        
+    features = np.vstack(features)
+        
+    return((classification, features, df_info))
+    
+
+wd = "C:\\Users\\Alexis\\Business\\SmartSheetMusic\\\AudioSet\\"
+# wd_samples = wd + "YoutubeSamples\\Old\\"
+wd_samples = wd + "YoutubeSamples\\"
+filename_audioset = wd + 'unbalanced_train_segments.csv'
+filename_df_random_audioset = wd_samples + "info.pkl"
+
+if __name__ == '__main__':
+    wd_samples = wd + "YoutubeSamples\\"
+    filename_df_random_audioset = wd_samples + "info.pkl"
+    main_build_dataset(filename_audioset, filename_df_random_audioset)
+    
+df_random_audioset = pd.read_pickle(filename_df_random_audioset)
+
+# (classification, audio_data, df_random_audioset) = audio_data_from_disk(wd_samples, df_random_audioset, 11025)
+   
+(y, X, df_random_audioset) = extract_features(wd_samples, df_random_audioset, n_chroma = 12, framewise_features=False)
+X_train, X_test, y_train, y_test, idx_train, idx_test = train_test_split(X, y, np.array(df_random_audioset.index))
+   
+mlp = MLPClassifier(hidden_layer_sizes=(100,100,100),max_iter=2000, solver='lbfgs')
+   
+mlp.fit(X_train,y_train)
+y_pred = mlp.predict(X_test)
+   
+# print(confusion_matrix(y_test,y_pred))
+   
+print(classification_report(y_test,y_pred))
+
+
+df_random_audioset.loc[idx_test[np.where(np.logical_and(y_test == 1, y_pred == 0))],:]
+
+
