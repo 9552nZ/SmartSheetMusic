@@ -236,7 +236,7 @@ def audio_data_from_disk(wd, df_info, sr, min_samples):
             
     return((all_data["classification"], all_data["audio_data"], all_data["df_info"]))    
 
-def extract_features(wd, df_info, n_chroma = 12, framewise_features=False):
+def extract_features(wd, df_info, n_chroma = 84, framewise_features=False):
      
     sr = 11025
     hop_length = 1024
@@ -262,16 +262,16 @@ def extract_features(wd, df_info, n_chroma = 12, framewise_features=False):
         # Append
         features.append(feature)
         
-    if framewise_features:
-        # We transpose the features and duplicate the clasification flags
-        features = map(lambda x: x.T, features)
-        classification = np.repeat(classification, nb_feature)
-    else:
-        # For n features and tk times, we reshape to 1D so as to get: 
-        # [f(1, t1), f(2, t1),..., f(n, t1), f(1, t2), ..., f(n, t2), ...., f(1, tk), ..., f(n, tk)]  
-        features = map(lambda x: np.reshape(x.T, (min_samples/hop_length+1) * n_chroma), features)
+#     if framewise_features:
+#         # We transpose the features and duplicate the clasification flags
+#         features = map(lambda x: x.T, features)
+#         classification = np.repeat(classification, nb_feature)
+#     else:
+#         # For n features and tk times, we reshape to 1D so as to get: 
+#         # [f(1, t1), f(2, t1),..., f(n, t1), f(1, t2), ..., f(n, t2), ...., f(1, tk), ..., f(n, tk)]  
+#         features = map(lambda x: np.reshape(x.T, (min_samples/hop_length+1) * n_chroma), features)
         
-    features = np.vstack(features)
+#     features = np.vstack(features)
         
     return((classification, features, df_info))
     
@@ -288,11 +288,17 @@ if __name__ == '__main__':
     main_build_dataset(filename_audioset, filename_df_random_audioset)
     
 df_random_audioset = pd.read_pickle(filename_df_random_audioset)
-
-# (classification, audio_data, df_random_audioset) = audio_data_from_disk(wd_samples, df_random_audioset, 11025)
    
-(y, X, df_random_audioset) = extract_features(wd_samples, df_random_audioset, n_chroma = 12, framewise_features=False)
-X_train, X_test, y_train, y_test, idx_train, idx_test = train_test_split(X, y, np.array(df_random_audioset.index))
+(y_tmp, X_tmp, df_random_audioset) = extract_features(wd_samples, df_random_audioset, n_chroma = 84, framewise_features=True)
+
+X = map(lambda x: x.T, X_tmp)
+X = np.vstack(X)
+y = np.repeat(y_tmp, X_tmp[0].shape[1])
+
+# (y, X, df_random_audioset) = extract_features(wd_samples, df_random_audioset, n_chroma = 84, framewise_features=True)
+# X_train, X_test, y_train, y_test, idx_train, idx_test = train_test_split(X, y, np.array(df_random_audioset.index))
+# X_train, X_test, y_train, y_test = train_test_split(X, y, )
+X_train, X_test, y_train, y_test = train_test_split(X, y, train_size = 10000)  
    
 mlp = MLPClassifier(hidden_layer_sizes=(100,100,100),max_iter=2000, solver='lbfgs')
    
@@ -303,7 +309,65 @@ y_pred = mlp.predict(X_test)
    
 print(classification_report(y_test,y_pred))
 
-
 df_random_audioset.loc[idx_test[np.where(np.logical_and(y_test == 1, y_pred == 0))],:]
+    
+#################################################################################
+    
+idx_train, idx_test = train_test_split(np.arange(len(y_tmp)), train_size = 200)
+
+X_train_l = [X_tmp[i] for i in idx_train]
+y_train_l = y_tmp[idx_train] 
+X_train_l = map(lambda x: x.T, X_train_l)
+X_train_l = np.vstack(X_train_l)
+
+y_train_l = np.repeat(y_train_l, X_tmp[0].shape[1])
+mlp_l = MLPClassifier(hidden_layer_sizes=(100,100,100),max_iter=2000)
+
+mlp_l.fit(X_train_l,y_train_l)
+
+idx_train_h, idx_test_h = train_test_split(idx_test)
+
+# y_pred_l = map(lambda x: mlp_l.predict(x), [X_tmp[i].T[0:30, :] for i in idx_test])
+y_pred_l = map(lambda x: mlp_l.predict(x.T), X_tmp)
+y_pred_l = np.vstack(y_pred_l)
+
+
+X_train_h = y_pred_l[idx_train_h, :]
+# y_train_h = y_tmp[idx_test][idx_train_h]
+y_train_h = y_tmp[idx_train_h] 
+
+X_test_h = y_pred_l[idx_test_h, :]
+y_test_h = y_tmp[idx_test_h]
+
+mlp_h = MLPClassifier(hidden_layer_sizes=(1),max_iter=2000)
+mlp_h.fit(X_train_h,y_train_h)
+
+y_pred_h = mlp_h.predict(X_test_h)
+
+print(classification_report(y_pred_h,y_test_h))
+
+idx_err = np.where(np.logical_and(y_test_h == 1, y_pred_h == 0))
+
+df_random_audioset1 = df_random_audioset.reset_index()
+df_random_audioset1.loc[idx_test_h[idx_err],:]
+
+#################################################################################
+
+X = map(lambda x: np.reshape(x.T, X_tmp[0].shape[1] * X_tmp[0].shape[0]), X_tmp)
+X = map(lambda x: x[3000:6000], X)
+X = np.vstack(X)
+y = y_tmp
+
+X_train, X_test, y_train, y_test = train_test_split(X, y)  
+   
+mlp = MLPClassifier(hidden_layer_sizes=(100,100,100),max_iter=2000)
+   
+mlp.fit(X_train,y_train)
+y_pred = mlp.predict(X_test)   
+   
+print(classification_report(y_test,y_pred))
+
+
+  
 
 
