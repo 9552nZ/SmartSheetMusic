@@ -36,7 +36,10 @@ def callback(in_data, frame_count, time_info, flag):
     Non-blocking callback. 
     Process CHUNK samples of data, updating the matcher.
     '''
-    global matcher # The callback function cannot take extra arguments
+    # The callback function cannot take extra arguments so we 
+    # need global variables.
+    global matcher 
+    global music_detecter
     
     # Start by converting the input data
     in_data = np.fromstring(in_data, dtype=np.float32).tolist()
