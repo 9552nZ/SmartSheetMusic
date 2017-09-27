@@ -10,6 +10,7 @@ import dtw
 import copy
 import matplotlib.pyplot as plt
 import config
+
             
 class MatcherMidi():
     '''
@@ -94,6 +95,7 @@ class Matcher():
 #                  compute_chromagram_fcn_kwargs = {}, 
 #                  use_low_memory=True):
     def __init__(self, wd, filename, sr, hop_length, 
+                 min_len_chromagram_sec = None,
                  diag_cost=1.2,
                  compute_chromagram_fcn = lb.feature.chroma_stft,                 
                  compute_chromagram_fcn_kwargs = {}, 
@@ -114,17 +116,24 @@ class Matcher():
         # Check if we need to store the chromagram to disk and retrieve it when it exists
         self.store_chromagram = False  
         
-        # Load the .wav file and turn into chromagram
+        # Check whether we have the '.mid' or '.wav' as input.
+        _, self.file_extension = os.path.splitext(filename)        
+        if not (self.file_extension == '.mid' or self.file_extension == '.wav'):
+            raise ValueError('Input file need to be either .mid or .wav')
+        
+        # Load the .wav file and turn into chromagram.
         self.set_chromagram(wd, filename)
                 
-        # Current position in the act / est data
-        # Set to -1 as no data has been processed
+        # Current position in the act / est data.
+        # Set to -1 as no data has been processed.
         self.idx_act = -1
         self.idx_est = -1
         
-        # position and position_sec represent the expected position in the Midi file
+        # Initialise position and position_sec and position_tick.  
+        # They represent the expected position in the Midi file.
         self.position = [0]
         self.position_sec = [0]
+        self.position_tick = 0
         
         # DTW parameters
         self.search_width = 100 # width of the band to search the optimal alignment (in frames)
@@ -140,42 +149,66 @@ class Matcher():
         self.cum_distance = np.zeros((self.chromagram_est.shape[0], self.chromagram_est.shape[0]), dtype='float16')
         self.cum_distance.fill(np.nan)
         
+        # Initialise the placeholder for the estimated audio data (only the most recent)
+        # This is only used in the online mode, as we may want to compute the chromagram  
+        # with more data that just the last online chunk.
+        self.audio_data_est = [] 
+        self.min_len_chromagram_sec = min_len_chromagram_sec # Seconds of audio we want to compute the chromagram
+        self.min_len_sample = utils.calc_nb_sample_stft(self.sr_act, self.hop_length_act, min_len_chromagram_sec) # Nb of samples to compute the chromagram 
+        
         # Initialise the best_paths, in order to keep the best path at each iteration
         # (one iteration correspond to one update of the live feed)
         self.best_paths = []
         
         # Check if we need to store the best paths
-        self.use_low_memory = use_low_memory
-        
-
+        self.use_low_memory = use_low_memory       
         
     def set_chromagram(self, wd, filename):
-        '''        
-        Get the chromagram from the disk or process the .wav file and write 
+        '''
+        The function can take as input a 'wav' or a '.mid' file.
+        in the latter case, we have to generate the corresponding '.wav'.  
+                
+        Get the chromagram from the disk or process the '.wav' file and write 
         the chromagram to disk if need be.
-        '''        
+        '''
+        
+#         # First, check whether we have the '.mid' or '.wav' as input.
+#         _, file_extension = os.path.splitext(filename)
+#         if not (file_extension == '.mid' or file_extension == '.wav'):
+#             raise ValueError('Input file need to be either .mid or .wav')
 
+        # Build a specific key for the chromagram in case we want to store.
         suffix_filename = "_chromagram_S{}_H{}_fcn{}_mode{}_.npy".format(self.sr_act, 
                                                                          self.hop_length_act,
                                                                          self.compute_chromagram_fcn.__name__, 
-                                                                         self.chromagram_mode)
-                                                                                                                                                                                                             
+                                                                         self.chromagram_mode)                                                                                                                                                                                                             
         
-        filename_chomagram = wd + utils.unmake_file_format(filename, '.wav') + suffix_filename
+        filename_chomagram = wd + utils.unmake_file_format(filename, self.file_extension) + suffix_filename
         
+        # We check if the chromagram exists on disk, otherwise we generate it.
         if os.path.isfile(filename_chomagram) and self.store_chromagram:
             self.chromagram_act = np.load(filename_chomagram)
         else:
+            # If the input file is a '.mid', we have to generate the '.wav'
+            # Also, store the midi object, it will be useful to get the position in ticks
+            if self.file_extension == '.mid':
+                self.midi_obj = pretty_midi.PrettyMIDI(wd + filename)#filename_mid = filename                
+                filename = utils.change_file_format(filename, '.mid', '.wav')                
+                utils.write_wav(wd + filename, 
+                                self.midi_obj.fluidsynth(self.sr_act, start_new_process32=utils.fluidsynth_start_new_process32()), 
+                                rate = self.sr_act)
+            
+            # Now we are sure to have a '.wav', we can retrieve it.
             audio_data_wav = lb.core.load(wd + utils.make_file_format(filename, '.wav'), sr = self.sr_act)
-#             self.chromagram_act = Matcher.compute_chromagram(audio_data_wav[0], 
-#                                                              self.compute_chromagram_fcn, self.compute_chromagram_fcn_kwargs,                                                             
-#                                                              self.sr_act, self.n_fft_act, self.hop_length_act)
+            
+            # Turn into chromagram
             self.chromagram_act = Matcher.compute_chromagram(audio_data_wav[0], 
                                                              self.sr_act,
                                                              self.hop_length_act,
                                                              self.compute_chromagram_fcn, 
                                                              self.compute_chromagram_fcn_kwargs,
-                                                             self.chromagram_mode)                                                                                                                                                                                         
+                                                             self.chromagram_mode)
+            # Store if need be.                                                                                                                                                                                         
             if self.store_chromagram:                                                 
                 np.save(filename_chomagram, self.chromagram_act)            
         
@@ -382,10 +415,15 @@ class Matcher():
     def update_position(self):        
         '''
         Append idx_act to the list of estimated positions (and the equivalent in seconds). 
+        In the case we have the midi_object available, also report the position in ticks
         '''
         
         self.position.append(self.idx_act)
         self.position_sec.append(self.position[-1] * self.hop_length_act / float(self.sr_act))
+        
+        # Only possible if the input file was a '.mid' in the first place
+        if self.file_extension == '.mid':
+            self.position_tick = self.midi_obj.time_to_tick(self.position_sec[-1])
         
     def plot_dtw_distance(self, paths=[-1]):
         '''
@@ -471,7 +509,7 @@ class MatcherEvaluator():
         self.filenames_wav_corrupt = [] # Placeholder the list of corrupted filenames
         self.matchers = [] # Placeholder for the matchers. May be removed at a later stage (for reporting only)...
         self.times_rests = [] # Placeholder for the starting and ending rests of the corrupted track
-        self.config_matcher = config_matcher # Config to override the matcher's parameters  
+        self.config_matcher = config_matcher # Config to override the matcher's parameters                  
         
     def corrupt(self):
         '''
@@ -487,7 +525,7 @@ class MatcherEvaluator():
             self.times_cor_act_all.append(times_cor_act)
             
             # Synthetise the .wav file
-            audio_data = midi_object_corrupt.fluidsynth(self.sr, start_new_process32=True)
+            audio_data = midi_object_corrupt.fluidsynth(self.sr, start_new_process32=utils.fluidsynth_start_new_process32())
             
             # Store the .wav data
             filename_wav_corrupt = utils.change_file_format(self.filename_midi_act, '.mid', '.wav', append = '_{}'.format(cnt))
@@ -507,12 +545,13 @@ class MatcherEvaluator():
         hop_length = 1024
         
         # First, turn the original .mid file into .wav
-        self.filename_wav_act = utils.change_file_format(self.filename_midi_act, '.mid', '.wav')
-        utils.write_wav(self.wd + self.filename_wav_act, pretty_midi.PrettyMIDI(self.wd + self.filename_midi_act).fluidsynth(self.sr, start_new_process32=True), rate = self.sr)
+#         self.filename_wav_act = utils.change_file_format(self.filename_midi_act, '.mid', '.wav')
+#         utils.write_wav(self.wd + self.filename_wav_act, pretty_midi.PrettyMIDI(self.wd + self.filename_midi_act).fluidsynth(self.sr, start_new_process32=True), rate = self.sr)
         
         # Initialise the matcher
 #         matcher = Matcher(self.wd, self.filename_wav_act, self.sr, n_fft, hop_length, **self.config_matcher)
-        matcher = Matcher(self.wd, self.filename_wav_act, self.sr, hop_length, **self.config_matcher)
+#         matcher = Matcher(self.wd, self.filename_wav_act, self.sr, hop_length, **self.config_matcher)
+        matcher = Matcher(self.wd, self.filename_midi_act, self.sr, hop_length, **self.config_matcher)
         
         # Loop over the configs
         for filename_wav_corrupt in self.filenames_wav_corrupt:
