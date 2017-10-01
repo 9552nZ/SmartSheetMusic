@@ -1,15 +1,6 @@
-import pandas as pd
-import datetime as dt
-import mido as md
-import aubio as ab
 import numpy as np
-import librosa as lb
-from matplotlib.cm import Blues
-import matplotlib.pyplot as plt
-import subprocess
-import scipy.io.wavfile
-import pyaudio
-import wave
+from librosa.output import write_wav
+from pyaudio import PyAudio, paInt16, paInt32, paFloat32
 from librosa.util import frame
 from sys import executable
 from datetime import timedelta
@@ -17,150 +8,15 @@ from math import ceil
 
 
 # Constants
-START_DATETIME = dt.datetime(2000, 1, 1, 0, 0, 0, 0)
-MIN_DELTATIME_FLOAT = 0.000001 # i.e. 1 micro-second
-MIN_DELTATIME_STR = 'us'
 SR = 11025
 N_FFT = 4096
 HOP_LENGTH = 1024
 WD = "C:\\Users\\Alexis\\Business\\SmartSheetMusic\\"
 WD_AUDIOSET = WD + "AudioSet\\"
 AUDIO_FORMAT_DEFAULT = "int16"
-AUDIO_FORMAT_MAP = {"int16":(np.int16, pyaudio.paInt16), 
-                    "int32":(np.int32, pyaudio.paInt32),
-                    "float32":(np.float32, pyaudio.paFloat32)}
-
-
-
-def to_clipboard(arr):
-    df = pd.DataFrame(arr)
-    df.to_clipboard()
-    print "Data loaded in clipboard."
-    return()
-
-def relative_ts_to_absolute_ts(times_sec, data_in):    
-    """
-    Transform the pitch array into time series
-    """
-    start = dt.datetime(year=2000,month=1,day=1)
-    datetimes = map(lambda x:dt.timedelta(seconds=x)+start,times_sec)
-    ts = pd.Series(data_in,index=datetimes)
-    
-    return ts
-
-def calc_midi_stats(filename_midi):
-    """
-    Compute some stats to get some sense of the content of a midi file. 
-    """
-    mid = md.MidiFile(filename_midi)
-    
-    nb_note_on = 0
-    nb_note_off = 0
-    for msg in mid.tracks[-1]: # only look at last track
-        if msg.type == 'note_on':
-            nb_note_on += 1
-        if msg.type == 'note_off':
-            nb_note_off += 1
-            
-    return nb_note_on, nb_note_off
-
-def process_midi_file(filename_midi):
-    """
-    Read the .midi file, extract the notes and reshape it
-    """    
-    
-    mid = md.MidiFile(filename_midi)
-    
-    # First find the tempo and make sure there is no tempo change
-    # Warning: This will break if the tempos are not sorted in the midi file 
-    tempo_values = []
-    tempo_ticks = [] 
-    for tr in mid.tracks:
-        for msg in tr:    
-            if msg.type == 'set_tempo':
-                tempo_values += [msg.tempo]
-                tempo_ticks += [msg.time]
-    if len(tempo_values) == 0 : raise ValueError('The tempo is not set properly')
-    
-    if len(mid.tracks) != 2 : raise ValueError('The midi file does not have two tracks, likely to get errors')
-                
-    # Now retrieve the actual pitches
-    pitches_act = []
-    times_act = []
-    cnt_time = 0
-    cnt_tick = 0  
-    for msg in mid.tracks[1]: # only look up in the second track        
-        # Find the current tempo
-        tempo_ticks_tmp = [x for x in tempo_ticks if x <= cnt_tick]
-        tempo = tempo_values[len(tempo_ticks_tmp)-1]
-        cnt_tick += msg.time
-        cnt_time += md.tick2second(msg.time, mid.ticks_per_beat, tempo)# 714285
-        
-        if msg.type == 'note_on':
-            pitches_act += [msg.note if msg.velocity > 0 else 0]
-            times_act += [cnt_time]                     
-            
-    ts_act = relative_ts_to_absolute_ts(times_act, pitches_act)
-    
-    # Remove duplicate indices and fill forward the pitches (to avoid linear interpolation) 
-    ts_act_clean = ts_act[~ts_act.index.duplicated(True)]
-    ts_act_clean = ts_act_clean.add(ts_act_clean.shift(1).shift(-1, freq='0.001ms'), fill_value=0)
-            
-    return(ts_act_clean)
-
-
-def process_wav_file(filename_wav, start_sec = 0.0, end_sec = float("inf")):
-    """
-    Read the .wav file, process it and estimate the Midi pitch number using aubio
-    """
-    downsample = 1
-    samplerate = SR // downsample
-    win_s = N_FFT // downsample # fft size
-    hop_s = HOP_LENGTH  // downsample # hop size
-    
-    # Read the .wav file
-    s = ab.source(filename_wav, samplerate, hop_s)
-    samplerate = s.samplerate
-    
-    tolerance = 0.8
-    
-    # Set up the pitch-estimation object
-    pitch_o = ab.pitch("yin", win_s, hop_s, samplerate)
-    pitch_o.set_unit("midi")
-    pitch_o.set_tolerance(tolerance)
-    
-    pitches_est = []
-    times_est = []
-    
-    # Set the cursor to the first desired frame
-    first_frame = int(samplerate * start_sec)
-    s.seek(first_frame)
-        
-    # Estimate the pitches
-    total_frames = 0 # can be removed
-    while True:
-        samples, read = s()    
-        pitch = pitch_o(samples)[0]
-        # Add 2x the pitch as we have two timestamps, one for the beginning and
-        # one for the end of the frame
-        pitches_est += [pitch, pitch]
-        times_est += [times_est[-1] + MIN_DELTATIME_FLOAT,  times_est[-1] + MIN_DELTATIME_FLOAT + read / float(samplerate)] if total_frames > 0 else [0.0, read / float(samplerate) - MIN_DELTATIME_FLOAT]
-        total_frames += read
-        if read < hop_s or times_est[-1] >= end_sec-start_sec: break     
-    
-    # We want the timestamp to represent the beginning of the frame
-    # Up to here, they represent where the hop is happening 
-    # Hence, we need to take out (win_s-hop_s) / float(samplerate) 
-    times_est = map(lambda x: x - (win_s-hop_s) / float(samplerate),times_est)
-    
-    # Convert to absolute timestamps
-    ts_est = relative_ts_to_absolute_ts(times_est, pitches_est)
-    
-    # Get rid of the negative timestamps (has the effect of removing the 
-    # estimated pitches for which we do not have a full win-s)
-    ts_est = ts_est[ts_est.index >= START_DATETIME]
-    
-    return(ts_est)
+AUDIO_FORMAT_MAP = {"int16":(np.int16, paInt16), 
+                    "int32":(np.int32, paInt32),
+                    "float32":(np.float32, paFloat32)}
 
 def distance_midi_pitch(x, y):
     """
@@ -224,8 +80,12 @@ def plot_chromagram(chromagram, sr=1.0, hop_length=1.0, ax=None, xticks_sec=True
     '''
     Plot a chromagram as a heatmap.
     Add to an existing plot or create a new one.
-    Can also be run online.
+    Can also be run online.    
     '''
+    
+    import matplotlib.pyplot as plt
+    from matplotlib.cm import Blues
+    
     # If we run the plot online, we may pass in the output of pcolor 
     # for faster plotting. In this case, we need to turn on the interactive mode. 
     if pcol is not None:
@@ -267,6 +127,10 @@ def plot_dtw_distance(cum_distance):
         The cumulative choma/choma distance
     
     '''
+    
+    import matplotlib.pyplot as plt
+    from matplotlib.cm import Blues
+    
     mask_rows = np.invert(np.all(np.isnan(cum_distance), 1))
     mask_cols = np.invert(np.all(np.isnan(cum_distance), 0))
     cum_distance = cum_distance[mask_rows, :][:, mask_cols]
@@ -275,27 +139,6 @@ def plot_dtw_distance(cum_distance):
     plt.colorbar()
     
     return()    
-
-def synthetise(input_path, output_path, synthetise_mode = '-OwM'):
-    """
-    Synthetise a .midi file to a .wav file using Timidity++
-    Uses the portable version fo Timidity, but we should move to normal version.
-    
-    E.g.
-    input_path = 'C:\Users\Alexis\Business\SmartSheetMusic\Samples\Chopin_op28_3\Chopin_Op028-01_003_20100611-SMD.mid'
-    output_path = 'C:\Users\Alexis\Business\SmartSheetMusic\Samples\Chopin_op28_3\output.wav'
-    
-    synthetise_mode = '-OwM' Generate RIFF mono format output.
-    For all other options, see the "mode" options in: 
-    http://www.onicos.com/staff/iz/timidity/doc/options.html    
-    """
-    
-    timidity_folder = 'C:/Program Files/timidity'
-    cmd = 'timidity {} -s 44100 {} -o {}'.format(input_path, synthetise_mode, output_path)
-     
-    cmd_output = subprocess.call(cmd, shell=True, cwd=timidity_folder)    
-    
-    return(cmd_output)
 
 def write_wav(filename, data, rate = 44100):
     """ 
@@ -306,7 +149,7 @@ def write_wav(filename, data, rate = 44100):
     # Compress the data (the input format is likely to be float64)
     # Make sure that the format is readable by Librosa
     maxv = np.iinfo(np.int16).max
-    lb.output.write_wav(filename, (data * maxv).astype(np.int16), rate)    
+    write_wav(filename, (data * maxv).astype(np.int16), rate)    
     
     return(None)
 
@@ -509,6 +352,8 @@ def youtube_download_audio(yt_id, start_sec, length_sec, filename_wav_out):
         False if the youtube-dl command has failed. True otherwise.
     '''
     
+    import subprocess
+    
     # Sample rate for the output ".wav" file
     sr = 11025
     
@@ -587,7 +432,7 @@ def record(record_sec, sr=SR, save=False, filename_wav_out="file.wav"):
     channels = 1
     chunk = 2048
      
-    audio = pyaudio.PyAudio()
+    audio = PyAudio()
      
     # Start Recording
     stream = audio.open(format=AUDIO_FORMAT_MAP[format_read][1], 
@@ -617,16 +462,6 @@ def record(record_sec, sr=SR, save=False, filename_wav_out="file.wav"):
     audio_data = np.reshape(audio_data, (len(audio_data)/channels, channels))         
     
     if save:
-        lb.output.write_wav(filename_wav_out, audio_data, sr, norm=False)
-#         wave_file = wave.open(filename_wav_out, 'wb')
-#         wave_file.setnchannels(channels)
-#         wave_file.setsampwidth(audio.get_sample_size(AUDIO_FORMAT_MAP[format_read][1]))
-#         wave_file.setframerate(sr)
-#         wave_file.writeframes(b''.join(frames))
-#         wave_file.close()                
-            
-#    out = np.array(frames)        
+        write_wav(filename_wav_out, audio_data, sr, norm=False)
+    
     return(audio_data)
-
-
-        
