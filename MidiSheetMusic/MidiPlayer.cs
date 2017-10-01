@@ -97,6 +97,8 @@ public class MidiPlayer : Panel  {
     private ZSocket subscriber;
     private int currentPulseTimeScoreFollowing;
     private int prevPulseTimeScoreFollowing;
+    TimeSpan startTimeScoreFollowing;
+    bool timeDisplayed;
 
     ///////////////////////////////////////////////////////////////////
 
@@ -142,7 +144,8 @@ public class MidiPlayer : Panel  {
         this.sheet = null;
         playstate = stopped;
         scoreFollowingState = stopped;
-        startTime = DateTime.Now.TimeOfDay;
+        timeDisplayed = false;
+        startTime = DateTime.Now.TimeOfDay;        
         startPulseTime = 0;
         currentPulseTime = 0;
         currentPulseTimeScoreFollowing = 0;        
@@ -774,7 +777,7 @@ public class MidiPlayer : Panel  {
      */
     private void StartStopScoreFollowing(object sender, EventArgs evt)
     {        
-        textBox.Text = scoreFollowingState.ToString();
+        //textBox.Text = scoreFollowingState.ToString();
         if (midifile == null || sheet == null /*|| numberTracks() == 0*/) {
             //bool midiNull = midifile == null;
             //bool sheetNull = sheet == null;
@@ -787,9 +790,12 @@ public class MidiPlayer : Panel  {
             return;
         }
         else if (scoreFollowingState == stopped) {
+
+            // Record the time at which we preeesed the button
+            startTimeScoreFollowing = DateTime.Now.TimeOfDay;
             
             // Create the python process to run the python code and start it
-            string filenamePythonScript = "C:/Users/Alexis/Source/TestPython2/AutomaticAudioTranscript/start_score_following.py";
+            string filenamePythonScript = "C:/Users/Alexis/Source/TestPython2/AutomaticAudioTranscript/start_score_following.py";// useless_script
             ProcessStartInfo info = new ProcessStartInfo();
             //info.CreateNoWindow = true;
             //info.RedirectStandardOutput = true;
@@ -799,14 +805,14 @@ public class MidiPlayer : Panel  {
             info.Arguments = filenamePythonScript + " " + midifile.FileName;
             python = new Process();
             python.StartInfo = info;
-            python.Start();
+            python.Start();            
         
             // Create the ZQM socket, open the TCP port and start listening
             context = new ZContext();
             subscriber = new ZSocket(context, ZSocketType.SUB);
             subscriber.Connect("tcp://127.0.0.1:5555");
             subscriber.Subscribe("");
-            
+                        
             // Change status to play mode
             scoreFollowingButton.Image = stopImage;
             scoreFollowingState = playing;
@@ -818,7 +824,8 @@ public class MidiPlayer : Panel  {
 
     /* The callback for the score follower.
     */     
-    void TimerCallbackScoreFollowing(object sender, EventArgs args) {   
+    void TimerCallbackScoreFollowing(object sender, EventArgs args) {  
+        
         if (midifile == null || sheet == null) {
             timerScoreFollowing.Stop();
             scoreFollowingState = stopped;
@@ -828,6 +835,7 @@ public class MidiPlayer : Panel  {
             timerScoreFollowing.Stop();            
             scoreFollowingState = stopped;
             scoreFollowingButton.Image = playImage;
+            timeDisplayed = false;
 
             python.Kill();
             python.Dispose();
@@ -839,16 +847,22 @@ public class MidiPlayer : Panel  {
             piano.Invalidate();
             return;
         } 
-        
-        using(var replyFrame = subscriber.ReceiveFrame()){
 
+        using (var replyFrame = subscriber.ReceiveFrame())
+        {
+            // Check how much time it took to get there           
+            if(timeDisplayed == false) {
+                TimeSpan diff = DateTime.Now.TimeOfDay.Subtract(startTimeScoreFollowing);
+                textBox.Text = diff.TotalMilliseconds.ToString();
+                timeDisplayed = true;
+            }
             string reply = replyFrame.ReadString();
 
             prevPulseTimeScoreFollowing = currentPulseTimeScoreFollowing;
             currentPulseTimeScoreFollowing = Int32.Parse(reply);
-            
+
             sheet.ShadeNotes((int)currentPulseTimeScoreFollowing, (int)prevPulseTimeScoreFollowing, true);
-        }            
+            }
     }
 
 }
