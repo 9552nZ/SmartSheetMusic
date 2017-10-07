@@ -95,6 +95,7 @@ public class MidiPlayer : Panel  {
     Process python;
     private ZContext context;
     private ZSocket subscriber;
+    private ZSocket requester;
     private int currentPulseTimeScoreFollowing;
     private int prevPulseTimeScoreFollowing;
     TimeSpan startTimeScoreFollowing;
@@ -793,26 +794,34 @@ public class MidiPlayer : Panel  {
 
             // Record the time at which we preeesed the button
             startTimeScoreFollowing = DateTime.Now.TimeOfDay;
-            
-            // Create the python process to run the python code and start it
-            string filenamePythonScript = "C:/Users/Alexis/Source/TestPython2/AutomaticAudioTranscript/start_score_following.py";// useless_script
-            ProcessStartInfo info = new ProcessStartInfo();
-            //info.CreateNoWindow = true;
-            //info.RedirectStandardOutput = true;
-            //info.RedirectStandardInput = true;  
-            info.UseShellExecute = false;
-            info.FileName = "python64.exe";
-            info.Arguments = filenamePythonScript + " " + midifile.FileName;
-            python = new Process();
-            python.StartInfo = info;
-            python.Start();            
-        
+
+            //// Create the python process to run the python code and start it
+            //string filenamePythonScript = "C:/Users/Alexis/Source/TestPython2/AutomaticAudioTranscript/start_score_following.py";// useless_script
+            //ProcessStartInfo info = new ProcessStartInfo();
+            ////info.CreateNoWindow = true;
+            ////info.RedirectStandardOutput = true;
+            ////info.RedirectStandardInput = true;  
+            //info.UseShellExecute = false;
+            //info.FileName = "python64.exe";
+            //info.Arguments = filenamePythonScript + " " + midifile.FileName;
+            //python = new Process();
+            //python.StartInfo = info;
+            //python.Start();            
+
             // Create the ZQM socket, open the TCP port and start listening
             context = new ZContext();
             subscriber = new ZSocket(context, ZSocketType.SUB);
             subscriber.Connect("tcp://127.0.0.1:5555");
             subscriber.Subscribe("");
-                        
+
+            requester = new ZSocket(context, ZSocketType.REQ);
+            requester.Connect("tcp://127.0.0.1:5556");
+            requester.Send(new ZFrame("start"));
+            using (ZFrame reply = requester.ReceiveFrame())
+            {
+                string strStartReceived = reply.ReadString();
+            }
+
             // Change status to play mode
             scoreFollowingButton.Image = stopImage;
             scoreFollowingState = playing;
@@ -837,21 +846,29 @@ public class MidiPlayer : Panel  {
             scoreFollowingButton.Image = playImage;
             timeDisplayed = false;
 
+            requester.Send(new ZFrame("reinit"));
+            using (ZFrame reply = requester.ReceiveFrame())
+            {
+                string strStartReceived = reply.ReadString();
+            }
+
             python.Kill();
             python.Dispose();
             
             subscriber.Dispose();
+            requester.Dispose();
             context.Dispose();
 
             sheet.Invalidate();
             piano.Invalidate();
             return;
-        } 
+        }
 
         using (var replyFrame = subscriber.ReceiveFrame())
         {
             // Check how much time it took to get there           
-            if(timeDisplayed == false) {
+            if (timeDisplayed == false)
+            {
                 TimeSpan diff = DateTime.Now.TimeOfDay.Subtract(startTimeScoreFollowing);
                 textBox.Text = diff.TotalMilliseconds.ToString();
                 timeDisplayed = true;
@@ -862,9 +879,13 @@ public class MidiPlayer : Panel  {
             currentPulseTimeScoreFollowing = Int32.Parse(reply);
 
             sheet.ShadeNotes((int)currentPulseTimeScoreFollowing, (int)prevPulseTimeScoreFollowing, true);
-            }
+        }
     }
 
+    public void SetPythonProcess(Process pythonIn)
+    {
+        python = pythonIn;
+    }
 }
 
 }
