@@ -18,6 +18,7 @@ import utils_audio_transcript as utils
 from score_following import Matcher
 from music_detection import MusicDetecter
 import os # REMOVE
+import datetime # REMOVE
 
 class MatcherManager():
     def __init__(self, filename_mid_full):
@@ -45,16 +46,20 @@ class MatcherManager():
             self.music_detecter = MusicDetecter(utils.WD_AUDIOSET, self.sr, self.hop_length, 84, self.min_len_sample)
         
         # Start the publishing socket
-        self.bind_socket()
+        self.bind_sockets()
         
         # Start the pyaudio stream 
         self.start_stream()
+        
+        self.recording = False
  
-    def bind_socket(self):
-        # Start the publishing ZMQ socket
+    def bind_sockets(self):
+        # Start the ZMQ sockets
         context = zmq.Context()
-        self.socket = context.socket(zmq.PUB)
-        self.socket.bind("tcp://*:5555")
+        self.socket_pub = context.socket(zmq.PUB)
+        self.socket_pub.bind("tcp://*:5555")
+        self.socket_rep = context.socket(zmq.REP)
+        self.socket_rep.bind("tcp://*:5556")
         
     def start_stream(self):
         '''
@@ -101,14 +106,16 @@ class MatcherManager():
     def check_ready_for_start(self):
         '''
         Check if we should start the matching procedure.
-        The function ensures that music has been detected.
-        !!!! NOT PLUGGED IN FOR NOW !!!
+        The function ensures that music has been detected.        
         '''
-        
+        ready = True
+        if len(self.audio_data) < self.min_len_sample:
+            ready = False
+            
         if self.detect_music:
-            music_detected = self.music_detecter.detect(self.audio_data)
+            ready = self.music_detecter.detect(self.audio_data)
         
-        return(True)
+        return(ready)
         
     def callback(self, new_audio_data):
         '''
@@ -117,10 +124,17 @@ class MatcherManager():
         Process CHUNK samples of data, updating the matcher.
         
         '''
+        if not self.recording:
+            # Block until we receive the starting instruction from the GUI
+            self.socket_rep.recv()
+            self.socket_rep.send(b"")
+            self.recording = True        
+        
+        # Once we started recording, keep the latest audio data
         self.update_audio_data(new_audio_data)
         
         if not self.check_ready_for_start():
-            return
+            return        
                         
         # We compute the chromagram only for CHUNK samples.
         # Not sure this is ideal, we may want to keep some history of the audio 
@@ -132,7 +146,7 @@ class MatcherManager():
                                            self.matcher.compute_chromagram_fcn_kwargs,
                                            self.matcher.chromagram_mode)
                                                              
-#         print "Time: {}   Size chromagram:{}    Size audio: {}".format(datetime.datetime.now().time(), chromagram_est.shape,  len(self.audio_data))
+        print "Time: {}   Size chromagram:{}    Size audio: {}".format(datetime.datetime.now().time(), chromagram_est.shape,  len(self.audio_data))
         
         # Only run the matching over the last (len(new_audio_data)/self.hop_length) segments of the chromagram
         idx_frames = np.arange(chromagram_est.shape[0] - len(new_audio_data) / self.hop_length, chromagram_est.shape[0])
@@ -146,7 +160,7 @@ class MatcherManager():
         Send the current position to the GUI via the socket.
         '''
         print "Sending current position: {}".format(self.matcher.position_tick)
-        self.socket.send(bytes(self.matcher.position_tick))                               
+        self.socket_pub.send(bytes(self.matcher.position_tick))                               
  
     def plot_chromagram(self):
         '''
@@ -173,127 +187,10 @@ if __name__ == '__main__':
     else:
         filename_mid = "C:\Users\Alexis\Business\SmartSheetMusic\Samples\TestScoreFollowing/Chopin_Op028-01_003_20100611-SMD.mid"
 
-    matcher_manager = MatcherManager(filename_mid)
-    
+    matcher_manager = MatcherManager(filename_mid)    
     
     while matcher_manager.stream.is_active():
 #         matcher_manager.plot_chromagram()
         matcher_manager.publish_position()
         sleep(matcher_manager.chunk/float(matcher_manager.sr))  
-
-# def update_audio_data(new_audio_data, audio_data, keep_length):
-#     '''
-#     Receive new audio data, append to existing and only keep the required 
-#     amount of most recent data.
-#     '''
-#     audio_data.extend(new_audio_data)      
-#     audio_data = audio_data[max(len(audio_data) - keep_length, 0):len(audio_data)]
-#     
-#     return audio_data
-# 
-# def callback(in_data, frame_count, time_info, flag):
-#     '''
-#     Non-blocking callback. 
-#     Process CHUNK samples of data, updating the matcher.
-#     '''
-#     # The callback function cannot take extra arguments so we 
-#     # need global variables.
-#     global matcher 
-#     global music_detecter
-#     
-#     # Start by converting the input data
-#     in_data = np.fromstring(in_data, dtype=np.int16).astype(np.float32).tolist()
-#     
-#     # Make sure that the chunk size is a multiple of hop size
-#     if (len(in_data) % matcher.hop_length_act) != 0:
-#         raise ValueError('Chunk size need to be a multiple of hop size')
-#     
-#     # Keep only the required amout of data
-#     audio_data_est = update_audio_data(in_data, matcher.audio_data_est, matcher.min_len_sample)
-#     
-#     matcher.audio_data_est = audio_data_est
-#     
-#     music_detected = music_detecter.detect(audio_data_est)
-#         
-#     # We compute the chromagram only for CHUNK samples.
-#     # Not sure this is ideal, we may want to keep some history of the audio input and compute the
-#     # chromagram based on that. 
-#     chromagram_est = Matcher.compute_chromagram(matcher.audio_data_est,
-#                                                 matcher.sr_act,
-#                                                 matcher.hop_length_act,                                             
-#                                                 matcher.compute_chromagram_fcn, 
-#                                                 matcher.compute_chromagram_fcn_kwargs,
-#                                                 matcher.chromagram_mode)
-#                                                                   
-#     print "Time: {}   Size chromagram:{}    Size audio: {}".format(datetime.datetime.now().time(), chromagram_est.shape,  len(matcher.audio_data_est))
-#        
-#     frames = np.arange(chromagram_est.shape[0] - len(in_data) / matcher.hop_length_act, chromagram_est.shape[0])
-#      
-#     # Run the online matching procedure, one frame at a time
-#     for n in frames:
-#         matcher.main_matcher(chromagram_est[n,:])
-#              
-#     return (None, pyaudio.paContinue)
-# 
-# if __name__ == '__main__':
-#     plt.ion() # REMOVE
-#     CHUNK = 16384/16
-#     sr = utils.SR
-#     hop_length = utils.HOP_LENGTH
-# #     HOP_LENGTH = 1024
-#     min_len_chromagram_sec = 4
-#     
-#     # Input the target '.mid' file of the score that we wish to follow 
-#     if len(sys.argv) > 1:
-#         full_filename = sys.argv[1]
-#     else:
-#         full_filename = "C:\Users\Alexis\Business\SmartSheetMusic\Samples\TestScoreFollowing/Chopin_Op028-01_003_20100611-SMD.mid"
-#     
-#         
-#     (wd, filename) = os.path.split(full_filename)
-#     wd = wd + "/"
-#     
-#     # Initialialise the matcher
-#     matcher = Matcher(wd, filename, sr, hop_length, min_len_chromagram_sec=min_len_chromagram_sec)
-#     
-#     # Initialise the music detecter
-#     music_detecter = MusicDetecter(utils.WD_AUDIOSET, sr, hop_length, 84, matcher.min_len_sample)
-#     
-#     # Start the publishing socket
-#     context = zmq.Context()
-#     socket = context.socket(zmq.PUB)
-#     socket.bind("tcp://*:5555")
-#     
-#     # Start the .wav file. !!!! REMOVE !!!!  
-# #     proc = subprocess.Popen(["C:\Users\Alexis\Business\SmartSheetMusic\Samples\TestScoreFollowing/Chopin_Op028-01_003_20100611-SMD.wav"], 
-# #                             shell=True,
-# #                             stdin=None, stdout=None, stderr=None, close_fds=True)   
-#     
-#     # Start the pyaudio stream 
-#     p = pyaudio.PyAudio()
-#     
-#     stream = p.open(format = pyaudio.paInt16,
-#                 channels = 1, # TODO: Make sure that everything is built to process mono.
-#                 rate = sr,
-#                 input = True,
-#                 frames_per_buffer = CHUNK, 
-#                 stream_callback = matcher_manager.callback)
-#     
-# #     stream.start_stream()
-#     first_plot = True
-#     # Publish the current position every CHUNK/float(SR) seconds
-#     
-#     while stream.is_active():
-# #         print "Sending current position: {}".format(matcher.position_tick)
-# #         socket.send(bytes(matcher.position_tick))    
-
-# 
-#         sleep(0.1)
-# #         sleep(CHUNK/float(sr))        
-     
-#     stream.stop_stream()
-#     stream.close()
-#     p.terminate()
-
-
     
