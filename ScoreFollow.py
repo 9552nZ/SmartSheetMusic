@@ -15,10 +15,10 @@ class ScoreFollow(object):
     
     def __init__(self):
         self.samplerate = 44100
-        self.stepseconds = 0.2 # in seconds
-        self.stepsinupdate = 10
+        self.stepseconds = 0.1 # in seconds
+        self.stepsinupdate = 5
         self.stepsinwindow = 50
-        self.chunk = 4410
+        self.chunk = 2205
         self.channels = 1
         self.instrument = 0 # Grand Piano
         self.scorefile = ''
@@ -101,7 +101,7 @@ class ScoreFollow(object):
         return dist
     
     def probModel(self, dist, dt, timewindow):      
-        p1 = np.exp(-dist);
+        p1 = np.exp(-dist)
         p2 = np.exp(-abs(timewindow-dt)/3)
         
         p = p1*p2
@@ -114,7 +114,7 @@ class ScoreFollow(object):
             self.mic.start()
         print("Starting score following. Exit with 'Ctrl+C'.")
         if len(self.mic.frames)<100:
-            time.sleep(2)
+            time.sleep(1)
         windowsize = self.stepseconds * self.stepsinwindow # in seconds
         timewindow = np.linspace(-windowsize, windowsize, 2*self.stepsinwindow+1)
         timewindow.resize((len(timewindow),1))
@@ -151,17 +151,17 @@ class ScoreFollow(object):
                 
                 posDelta = index - self.stepsinwindow + timestart
                 oldpos   = currentpos
-                noiselevel = min(0.6*noiselevel + 0.5*np.mean(livefeatures), 2.5)
+                noiselevel = min(0.6*noiselevel + 0.4*np.mean(livefeatures), 2.5)
                 if noiselevel>2: # this is noise - reset
                     currentpos = 0
                     speed = 0
-                elif avval>3*avprob: # we've found a match, update position
+                elif avval>2*avprob: # we've found a match, update position
                     speed = 0.6*speed + 0.4*posDelta            
                     currentpos += speed
                     currentpos = int(currentpos)
                 
                 if oldpos!=currentpos:
-                    print('Current Frame:', currentpos, avval, avprob)
+                    print('Current Frame:', currentpos, speed, avval, avprob)
                 
         except KeyboardInterrupt:
             self.mic.stop()
