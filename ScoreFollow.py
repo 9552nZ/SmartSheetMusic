@@ -10,29 +10,33 @@ import pretty_midi
 import sounddevice as sd
 import time
 import statistics
+from filterpy.kalman import KalmanFilter
+from filterpy.common import Q_discrete_white_noise
 
 class ScoreFollow(object):
     
     def __init__(self):
-        self.samplerate = 44100
-        self.hop_size = 1024
-        self.windowsize = 2  # in seconds
-        self.livewindow = 2 # in seconds
+        self.samplerate = 11025
+        self.hop_size = 256
+        self.windowsize = 3  # in seconds
+        self.livewindow = 3 # in seconds
         self.buffersize = 5 # in seconds   
         self.framesinbuffer = self.samplerate*self.buffersize
         
         self.frames = np.zeros((0,1))
+        
+        self.reading_prob = [0.5]
+        self.reading_speed = [40]
+        self.reading_pos = [88]
+        self.volume = []
+        self.kfilter = self.kalman_initialise()
+        self.kalman_out = []
         self.speed = []
-        self.speed2 = []
 
         self.debug_features = []
         self.debug_livefeatures = []
         self.debug_livewav = []
-        self.debug_posdelta = []
         self.debug_dist = []
-        self.debug_probs = []
-        self.debug_currentpos = []
-        self.debug_spid = []
         
         self.channels = 1
         self.instrument = 0 # Grand Piano
@@ -73,7 +77,7 @@ class ScoreFollow(object):
         sd.stop()
 
     def wav2features(self, wavObj):
-        features = librosa.feature.chroma_cqt(y=wavObj,sr=self.samplerate, hop_length=self.hop_size, norm = 2, threshold=0.0001, n_chroma=7*12, n_octaves=7)
+        features = librosa.feature.chroma_cqt(y=wavObj,sr=self.samplerate, hop_length=self.hop_size, norm = 2, threshold=0.001, n_chroma=7*12, n_octaves=7)
         return features
     
     def feature2distance(self, livefeature, features):
@@ -84,21 +88,7 @@ class ScoreFollow(object):
             dist[:, [i]] = np.mean((features - livefeature[:,[i]])**2, axis=0, keepdims=True).T / np.mean(features**2, axis=0, keepdims=True).T
         return dist
     
-    def prob_model_old(self, dist, featuretime, speed=43):      
-        p1 = np.exp(-dist)
-        nlive = p1.shape[1]
-        offset = featuretime*speed
-        for i in range(nlive-1):
-            n = int((nlive-i)*offset)
-            if n>0:
-                p1[n:,[i]] = p1[0:-n,[i]]
-                p1[0:n,[i]] = 0.1            
-        p = np.prod(p1,axis=1)
-        #p = np.mean(p1,axis=1)
-        p /= np.sum(p)
-        return p.argmax(), p.max(), 0
-    
-    def prob_model(self, dist, featuretime, speed=43):
+    def prob_model(self, dt, dist, featuretime, speed=43):
         [ntrue, nlive] = dist.shape
         for j in range(0,40):
             offset = featuretime*(speed+j-20)
@@ -119,63 +109,87 @@ class ScoreFollow(object):
         val = probs[order[-2:]]
         spidx = np.sum(val*np.floor(order[-2:]/ntrue))/np.sum(val)
         deltaidx = np.sum(val*np.mod(order[-2:], ntrue))/np.sum(val)
-        return deltaidx, np.mean(val), speed+spidx-20
-                
-    
+        
+        self.reading_pos.append(self.reading_pos[-1]+deltaidx-ntrue/2)
+        self.reading_speed.append(np.mean(speed+spidx-20))
+        self.reading_prob.append(np.mean(val))
+             
+    def kalman_initialise(self, dim_x = 3, dim_z = 2, dt = 0.5):
+        kfilter = KalmanFilter(dim_x, dim_z)
+        kfilter.x = np.array([88., 40., 0.])
+        kfilter.F = np.array([[1, dt, 0.5*dt*dt],
+                              [0,  1,        dt],
+                              [0,  0,         1]], dtype=float)
+        kfilter.H = np.array([[1, 0, 0],
+                              [0, 1, 0]], dtype=float)
+        kfilter.P = Q_discrete_white_noise(dim_x, 1, 1)
+        kfilter.Q = 0.01*np.array([[0.1, 0, 0],
+                              [0, 10, 0],
+                              [0, 0, 100]], dtype=float)
+        kfilter.R = np.array([[1, 0],
+                              [0, 1]], dtype=float)    
+        return kfilter
+        
+    def kalman_update(self, dt = 0.5, std_q = 1, std_r = 1):
+        self.kfilter.F = np.array([[1, dt, 0.5*dt*dt],
+                              [0,  1,        dt],
+                              [0,  0,         1]], dtype=float)    
+        
+    def kalman_position_model(self):
+        z = np.array([self.reading_pos[-1], self.reading_speed[-1]], dtype=float).squeeze()
+        self.kfilter.update(z)
+        self.kfilter.predict()       
+        self.kalman_out.append(self.kfilter.x)
+        
+    def my_position_model(self):
+        # to do
+        return None 
+        
     def start_following(self, features):       
         self.mic.start()
         time.sleep(self.livewindow)
         # One feature frame corresponds to 1024/44100 seconds
         featuretime = self.hop_size/self.samplerate
+        defaultspeed = 1/featuretime
         numfeatures  = int(self.samplerate*self.windowsize/self.hop_size)
         currentpos   = numfeatures
-        volume       = 0
-        t0           = time.clock()
+        dt = 0
         print("Starting score following. Exit with 'Ctrl+C'.")
         try:
             while True:
-                time.sleep(0.1)
-                thisfeatures = features[:,currentpos-numfeatures:currentpos+numfeatures]
-                
+                time.sleep(0.01)
+                oldpos = currentpos
                 if len(self.frames)<self.livewindow*self.samplerate:
                     livewav = self.frames.squeeze()
                 else:
                     livewav = self.frames[-self.livewindow*self.samplerate:].squeeze()
-                
-                livefeatures = self.wav2features(livewav)              
-                dist = self.feature2distance(livefeatures, thisfeatures)
-                
-                dt = time.clock() - t0
-                t0 = time.clock()
-                
-                index, val, spid = self.prob_model(dist, featuretime,40)
-                #print(index, val, spid, dt)
-                posDelta = index-numfeatures
-                if currentpos==numfeatures:
-                    posDelta = max(0,posDelta)
-                                               
-                oldpos   = currentpos
-                volume   = 0.6*volume+0.4*np.sqrt(np.mean(livewav**2))
-                if volume<0.01: # this is noise - reset
-                    currentpos = numfeatures
-                elif val>0.2: # we've found a match, update position
-                    # Loggind
+                self.volume.append(np.sqrt(np.mean(livewav**2)))
+
+                if self.volume[-1]>0.01:
+                    thisfeatures = features[:,currentpos-numfeatures:currentpos+numfeatures]                    
+                    livefeatures = self.wav2features(livewav)              
+                    dist = self.feature2distance(livefeatures, thisfeatures)
+                                     
+                    if dt==0:
+                        dt=0.6
+                    else:
+                        dt = time.clock() - t0
+                    t0 = time.clock()
+                    self.prob_model(dt, dist, featuretime, defaultspeed)
+                    self.kalman_update(dt)
+                    self.kalman_position_model()
+                    
                     self.debug_features.append(thisfeatures)
                     self.debug_livefeatures.append(livefeatures)
                     self.debug_livewav.append(livewav)
-                    self.debug_posdelta.append(posDelta)
                     self.debug_dist.append(dist)
-                    self.debug_currentpos.append(currentpos)
-                    self.debug_spid.append(spid)
-                    
-                    self.speed.append(statistics.median(self.debug_posdelta[-10:])/dt)
-                    self.speed2.append(statistics.median(self.debug_spid[-10:]))
-                    currentpos += posDelta
-                    currentpos = max(int(currentpos), numfeatures)
+                
+                    self.speed.append(statistics.median(self.reading_speed[-10:]))
 
+                    currentpos = max(int(self.kalman_out[-1][0]), numfeatures)
                                 
                 if oldpos!=currentpos:
-                    print('Current Frame:', currentpos-numfeatures, 'Ratio: ', val, 'Speed:', self.speed2[-1])
+                    print('Current Frame:', currentpos-numfeatures, 'Probability: ', self.reading_prob[-1], 'Speed:', self.speed[-1], 'dt:', dt)
                 
         except KeyboardInterrupt:
             self.mic.stop()
