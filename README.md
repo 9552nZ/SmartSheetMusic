@@ -39,6 +39,7 @@
 - http://resources.mpi-inf.mpg.de/SMD/SMD_MIDI-Audio-Piano-Music.html
 - https://github.com/craffel/midi-dataset (*Corresponds to Collin Raffel Thesis)
 - https://github.com/MTG/otmm_audio_score_alignment_dataset
+- https://github.com/mdeff/fma
 
 ## Software Specifications
 - Fully featured software -> too much work possibly
