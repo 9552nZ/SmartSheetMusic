@@ -1,50 +1,9 @@
 import librosa as lb
 import numpy as np
-import corrupt_midi
 import os
 import utils_audio_transcript as utils
 import pretty_midi
-from midi.utils import midiread, midiwrite
-from math import floor, ceil
-import dtw
-import copy
 import matplotlib.pyplot as plt
-import config
-
-            
-class MatcherMidi():
-    '''
-    Offline DTW to align MIDI files. The mid-level feature used is the piano-roll representation
-    (does not require the used instrument to be a piano)    
-    '''
-     
-    def __init__(self, wd, filename1, filename2):
-         
-        self.midi_band = (0, 127) # the range of possible Midi notes
-        self.dt = 0.1 # the time resolution
-         
-        # Set up the mid-level features used for matching 
-        self.piano_roll1 = midiread(wd + filename1, r=self.midi_band, dt=self.dt).piano_roll
-        self.piano_roll2 = midiread(wd + filename2, r=self.midi_band, dt=self.dt).piano_roll
-         
-    def build_aligned_midi(self, wd, filename1, filename2):
-         
-        # Reconstruct the aligned piano rolls   
-        self.aligned_piano_roll1 = self.piano_roll1[self.path[0],:]
-        self.aligned_piano_roll2 = self.piano_roll2[self.path[1],:]
-         
-        # Reconstruct the aligned midis      
-        midiwrite(wd + filename1, self.aligned_piano_roll1, r=self.midi_band, dt=self.dt)
-        midiwrite(wd + filename2, self.aligned_piano_roll2, r=self.midi_band, dt=self.dt)
-         
-         
-    def main_matcher(self):
-                 
-        # Run the DTW matching algorithm
-        distance_tot, distance_matrix, best_path = dtw.dtw(self.piano_roll1, self.piano_roll2, utils.distance_midi_cosine)
-        self.distance_tot = distance_tot
-        self.distance_matrix = distance_matrix
-        self.path = best_path       
         
 class CellList():
     '''
@@ -88,24 +47,17 @@ class Matcher():
     http://www.cp.jku.at/research/papers/Arzt_Masterarbeit_2007.pdf
     https://code.soundsoftware.ac.uk/projects/match/repository/entry/at/ofai/music/match/Finder.java
     '''
-    
-#     def __init__(self, wd, filename, sr, n_fft, hop_length, 
-#                  diag_cost=1.2,
-#                  compute_chromagram_fcn = lb.feature.chroma_stft,
-#                  compute_chromagram_fcn_kwargs = {}, 
-#                  use_low_memory=True):
-    def __init__(self, wd, filename, sr, hop_length, 
-                 min_len_chromagram_sec = None,
-                 diag_cost=1.2,
-                 compute_chromagram_fcn = lb.feature.chroma_stft,                 
+    def __init__(self, wd, filename, sr, hop_length,                  
+                 diag_cost=1.20,
+                 compute_chromagram_fcn = lb.feature.chroma_stft, # Change to use CQT                
                  compute_chromagram_fcn_kwargs = {}, 
                  chromagram_mode = 0,
+                 chromagram_act = None,
                  use_low_memory=True): 
         
         # Start by fixing the sample rate and hop size for the spectrum
         # decomposition
         self.sr_act = sr
-#         self.n_fft_act = n_fft
         self.hop_length_act = hop_length   
         
         # Set the function used to compute the chromagram and its parameters
@@ -122,7 +74,7 @@ class Matcher():
             raise ValueError('Input file need to be either .mid or .wav')
         
         # Load the .wav file and turn into chromagram.
-        self.set_chromagram(wd, filename)
+        self.set_chromagram(wd, filename, chromagram_act=chromagram_act)
                 
         # Current position in the act / est data.
         # Set to -1 as no data has been processed.
@@ -144,18 +96,11 @@ class Matcher():
         self.input_advanced = False
         
         # Initialise large empty matrices for chromagram_est and for the cumulative distance matrix
-        self.chromagram_est = np.zeros((self.len_chromagram_act*2, self.nb_feature_chromagram))
+        self.chromagram_est = np.zeros((max(self.len_chromagram_act*2, 2000), self.nb_feature_chromagram))
         self.chromagram_est.fill(np.nan)
         self.cum_distance = np.zeros((self.chromagram_est.shape[0], self.chromagram_est.shape[0]), dtype='float16')
         self.cum_distance.fill(np.nan)
-        
-        # Initialise the placeholder for the estimated audio data (only the most recent)
-        # This is only used in the online mode, as we may want to compute the chromagram  
-        # with more data that just the last online chunk.
-        self.audio_data_est = [] 
-        self.min_len_chromagram_sec = min_len_chromagram_sec # Seconds of audio we want to compute the chromagram
-        self.min_len_sample = utils.calc_nb_sample_stft(self.sr_act, self.hop_length_act, min_len_chromagram_sec) # Nb of samples to compute the chromagram 
-        
+                
         # Initialise the best_paths, in order to keep the best path at each iteration
         # (one iteration correspond to one update of the live feed)
         self.best_paths = []
@@ -163,7 +108,7 @@ class Matcher():
         # Check if we need to store the best paths
         self.use_low_memory = use_low_memory       
         
-    def set_chromagram(self, wd, filename):
+    def set_chromagram(self, wd, filename, chromagram_act=None):
         '''
         The function can take as input a 'wav' or a '.mid' file.
         in the latter case, we have to generate the corresponding '.wav'.  
@@ -172,11 +117,6 @@ class Matcher():
         the chromagram to disk if need be.
         '''
         
-#         # First, check whether we have the '.mid' or '.wav' as input.
-#         _, file_extension = os.path.splitext(filename)
-#         if not (file_extension == '.mid' or file_extension == '.wav'):
-#             raise ValueError('Input file need to be either .mid or .wav')
-
         # Build a specific key for the chromagram in case we want to store.
         suffix_filename = "_chromagram_S{}_H{}_fcn{}_mode{}_.npy".format(self.sr_act, 
                                                                          self.hop_length_act,
@@ -185,8 +125,11 @@ class Matcher():
         
         filename_chomagram = wd + utils.unmake_file_format(filename, self.file_extension) + suffix_filename
         
-        # We check if the chromagram exists on disk, otherwise we generate it.
-        if os.path.isfile(filename_chomagram) and self.store_chromagram:
+        # We first check if a chromagram has been passed as input,
+        # second, we check if the chromagram exists on disk, otherwise we generate it.
+        if chromagram_act is not None:
+            self.chromagram_act = chromagram_act         
+        elif os.path.isfile(filename_chomagram) and self.store_chromagram:
             self.chromagram_act = np.load(filename_chomagram)
         else:
             # If the input file is a '.mid', we have to generate the '.wav'
@@ -282,11 +225,7 @@ class Matcher():
         
         isnan_s = np.isnan(self.cum_distance[i-1, j])
         isnan_w = np.isnan(self.cum_distance[i, j-1])
-        isnan_sw = np.isnan(self.cum_distance[i-1, j-1])
-        
-#         # The case with all 3 nans should not arise
-#         if isnan_s and isnan_w and isnan_sw: 
-#             raise ValueError('Could not find any valid cell leading to ({}, {})'.format(i, j))        
+        isnan_sw = np.isnan(self.cum_distance[i-1, j-1])       
         
         # Standard case: compute everything        
         if not isnan_s and not isnan_w and not isnan_sw:
@@ -383,7 +322,6 @@ class Matcher():
             idx_est = self.idx_est
             
             for k in np.arange(max(idx_act-self.search_width+1, 0), idx_act+1):
-#             for k in np.arange(max(idx_act-self.search_width/2+1, 0), min(idx_act+self.search_width/2+1, self.len_chromagram_act)): # VERIFY!!!
                 distance = utils.distance_chroma(self.chromagram_act[k, :], self.chromagram_est[idx_est, :])
                 cells = self.find_cells(k, idx_est)
                 self.cum_distance[k, idx_est] = distance + self.find_best_path(cells, True)
@@ -481,166 +419,4 @@ class Matcher():
             self.update_position()  
             
             if not self.use_low_memory:                
-                self.update_best_path()
-            
-
-class MatcherEvaluator():
-    """
-    Class to evaluate the score following procedure.
-    1) Apply several corruptions to the original Midi file
-    2) Perform alignment for each
-    3) Compute the difference between ground-truth and estimated positions
-    """     
-    def __init__(self, wd, filename_midi, config_matcher={}, configs_corrupt={}):
-        
-        self.wd = wd
-        self.filename_midi_act = filename_midi
-        self.sr = 11025 # Used for both synthesis of the Midi files and alignment
-        self.midi_object = pretty_midi.PrettyMIDI(self.wd + self.filename_midi_act) # Keep the original Midi file in memory 
-        self.len_act_sec = self.midi_object._PrettyMIDI__tick_to_time[-1]
-        self.times_ori_act = np.linspace(0.0, self.len_act_sec, int(self.len_act_sec/0.01)) # The reference timestamps in the original data
-        self.times_est_all = [] # Placeholder for the output times of the alignment procedure [corrupted, original]
-        self.times_cor_act_all = [] # Placeholder for the corrupted times (ground-truth)
-        self.alignement_stats = [] # Placeholder for the output of the evaluation procedure
-                 
-        # Retrieve the corruption configs
-        self.corrupt_configs = configs_corrupt
-
-        self.filenames_wav_corrupt = [] # Placeholder the list of corrupted filenames
-        self.matchers = [] # Placeholder for the matchers. May be removed at a later stage (for reporting only)...
-        self.times_rests = [] # Placeholder for the starting and ending rests of the corrupted track
-        self.config_matcher = config_matcher # Config to override the matcher's parameters                  
-        
-    def corrupt(self):
-        '''
-        Loop over the corruption configs, apply these to the Midi, synthetise and store as .wav.
-        '''
-        
-        for cnt, config in enumerate(self.corrupt_configs):
-            # Make a copy of the midi object as corrupt_midi.corrupt_midi will modify it
-            midi_object_corrupt = copy.deepcopy(self.midi_object)
-            
-            # Apply the corruption procedure
-            times_cor_act, diagnostics = corrupt_midi.corrupt_midi(midi_object_corrupt, self.times_ori_act, **config)
-            self.times_cor_act_all.append(times_cor_act)
-            
-            # Synthetise the .wav file
-            audio_data = midi_object_corrupt.fluidsynth(self.sr, start_new_process32=utils.fluidsynth_start_new_process32())
-            
-            # Store the .wav data
-            filename_wav_corrupt = utils.change_file_format(self.filename_midi_act, '.mid', '.wav', append = '_{}'.format(cnt))
-            self.filenames_wav_corrupt.append(filename_wav_corrupt) # Keep the names for later use            
-            utils.write_wav(self.wd + filename_wav_corrupt, audio_data, rate = self.sr)
-            
-            # Store the .mid (not required)
-            midi_object_corrupt.write(self.wd + self.filename_midi_act[:len(self.filename_midi_act)-4] + '_{}.mid'.format(cnt))            
-            
-    def align(self):
-        '''
-        Perform the alignement procedure between the original .wav and each of the corrupted .wav.
-        Keep the results of the alignment procedure.
-        '''
-        
-#         n_fft = 2048
-        hop_length = 1024
-        
-        # First, turn the original .mid file into .wav
-#         self.filename_wav_act = utils.change_file_format(self.filename_midi_act, '.mid', '.wav')
-#         utils.write_wav(self.wd + self.filename_wav_act, pretty_midi.PrettyMIDI(self.wd + self.filename_midi_act).fluidsynth(self.sr, start_new_process32=True), rate = self.sr)
-        
-        # Initialise the matcher
-#         matcher = Matcher(self.wd, self.filename_wav_act, self.sr, n_fft, hop_length, **self.config_matcher)
-#         matcher = Matcher(self.wd, self.filename_wav_act, self.sr, hop_length, **self.config_matcher)
-        matcher = Matcher(self.wd, self.filename_midi_act, self.sr, hop_length, **self.config_matcher)
-        
-        # Loop over the configs
-        for filename_wav_corrupt in self.filenames_wav_corrupt:
-            
-            print('Aligning {}'.format(filename_wav_corrupt))
-            
-            # Copy the matcher as it will be modified
-            matcher_tmp = copy.deepcopy(matcher)
-            
-            # Load the audio data
-            audio_data_est = lb.core.load(self.wd + filename_wav_corrupt, sr = matcher_tmp.sr_act)[0]
-            
-            # Find the starting and ending rests
-            rests = utils.find_start_end_rests(audio_data_est, matcher_tmp.sr_act) # No need to pass in hop_size and n_fft
-            self.times_rests.append(rests)
-            
-            # Compute the chromagram, use the engine of the matcher to ensure that both chromagrams have 
-            # been computed with the same procedure.
-#             chromagram_est = Matcher.compute_chromagram(audio_data_est, 
-#                                                         matcher_tmp.compute_chromagram_fcn, 
-#                                                         matcher_tmp.compute_chromagram_fcn_kwargs, 
-#                                                         self.sr, n_fft, hop_length)
-
-            chromagram_est = Matcher.compute_chromagram(audio_data_est, 
-                                                        self.sr, 
-                                                        hop_length,                                                        
-                                                        matcher_tmp.compute_chromagram_fcn, 
-                                                        matcher_tmp.compute_chromagram_fcn_kwargs,
-                                                        matcher_tmp.chromagram_mode)                                                         
-            
-            # Run the online alignment, frame by frame
-            nb_frames_est = chromagram_est.shape[0]
-            for n in range(nb_frames_est):
-                matcher_tmp.main_matcher(chromagram_est[n,:])
-                
-            # Keep the alignment output
-            # Not sure whether we should add/take out one frame... Also, we should use matcher_tmp.sr_est once possible
-            times_cor_est = np.arange(nb_frames_est) * matcher_tmp.hop_length_act / float(matcher_tmp.sr_act) 
-            times_ori_est = np.array(matcher_tmp.position_sec)
-            self.times_est_all.append(np.array([times_cor_est, times_ori_est]).T)
-            
-            # Keep the matchers (for reporting only, may be removed at a later stage)
-            self.matchers.append(matcher_tmp)            
-                
-    def evaluate(self):
-        '''
-        Loop over the corruption configs and calculate the alignment stats.
-        '''
-        for cnt, times_est in enumerate(self.times_est_all):
-            
-            times_cor_est = times_est[:,0]
-            times_ori_est = times_est[:,1]            
-            
-            # Compute the alignment error for all the times_cor_est times.
-            alignment_error_raw = utils.calc_alignment_stats(times_cor_est, times_ori_est, self.times_cor_act_all[cnt], self.times_ori_act)
-            
-            # Extract the values that correspond to the times after the starting rest and before 
-            # the finishing rest.  
-            mask = np.logical_and(times_cor_est >= self.times_rests[cnt][0], times_cor_est <= self.times_rests[cnt][1])               
-            alignment_error = alignment_error_raw[mask]
-            
-            # Compute the aggregate metrics
-            mean_error = np.mean(alignment_error)
-            mean_abs_error = np.mean(np.absolute(alignment_error))
-            prctile_error = np.percentile(alignment_error, np.array([0.0, 1.0, 5.0, 50.0, 95.0, 99.0, 100.0]))
-                                       
-            alignement_stats = {
-                'alignment_error_raw':alignment_error_raw,
-                'alignment_error':alignment_error,
-                'mean_error':mean_error,
-                'mean_abs_error':mean_abs_error,
-                'prctile_error':prctile_error,
-                'idx_config_corruption':cnt                              
-                } 
-             
-            self.alignement_stats.append(alignement_stats)
-            
-    def plot_alignment_error(self):
-        '''
-        Plot the alignment error for all the corruption configs.
-        '''
-        nbConf = len(self.corrupt_configs)
-        axarr = plt.subplots(int(ceil(nbConf/2.0)), min(nbConf, 2), squeeze=False)[1]
-        for cnt, config in enumerate(self.corrupt_configs):          
-            ax = axarr[int(floor(cnt/2.0)), cnt%2 ]                
-            ax.plot(self.alignement_stats[cnt]['alignment_error_raw'])
-            ax.set_title(str(config))
-        
-    def main_evaluation(self):
-        self.corrupt()
-        self.align()
-        self.evaluate()
+                self.update_best_path()            

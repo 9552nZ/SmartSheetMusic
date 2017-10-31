@@ -1,5 +1,5 @@
 import numpy as np
-from librosa.output import write_wav
+from librosa.output import write_wav as lb_write_wav
 from pyaudio import PyAudio, paInt16, paInt32, paFloat32
 from librosa.util import frame
 from sys import executable
@@ -13,7 +13,8 @@ N_FFT = 4096
 HOP_LENGTH = 1024
 WD = "C:\\Users\\Alexis\\Business\\SmartSheetMusic\\"
 WD_AUDIOSET = WD + "AudioSet\\"
-AUDIO_FORMAT_DEFAULT = "int16"
+WD_MATCHER_EVALUATION = WD + "Samples\\TestScoreFollowing\\"
+AUDIO_FORMAT_DEFAULT = "float32"
 AUDIO_FORMAT_MAP = {"int16":(np.int16, paInt16), 
                     "int32":(np.int32, paInt32),
                     "float32":(np.float32, paFloat32)}
@@ -116,7 +117,22 @@ def plot_chromagram(chromagram, sr=1.0, hop_length=1.0, ax=None, xticks_sec=True
  
     return(pcol)
 
-
+def plot_spectrogram(spectrogram, plot_data=None):
+    import matplotlib.pyplot as plt        
+    
+    if plot_data is not None:             
+        plot_data[2].set_ydata(spectrogram) # Careful about the limits
+        plot_data[0].canvas.draw()
+        plot_data[0].canvas.flush_events()
+    else:
+        plt.ion() 
+        fig = plt.figure()
+        ax = fig.add_subplot(111)
+        line, = ax.plot(spectrogram)
+        plot_data = (fig,ax,line)
+    
+    return(plot_data)
+        
 def plot_dtw_distance(cum_distance):
     '''
     Plot the cumulative distance as a heat map to visualise the DTW.
@@ -149,7 +165,7 @@ def write_wav(filename, data, rate = 44100):
     # Compress the data (the input format is likely to be float64)
     # Make sure that the format is readable by Librosa
     maxv = np.iinfo(np.int16).max
-    write_wav(filename, (data * maxv).astype(np.int16), rate)    
+    lb_write_wav(filename, (data * maxv).astype(np.int16), rate)    
     
     return(None)
 
@@ -313,7 +329,7 @@ def fluidsynth_start_new_process32():
     fluidsynth_start_new_process32 : bool     
     '''
     
-    if '64' in executable:
+    if '64' in executable or '36' in executable:
         fluidsynth_start_new_process32 = True
     else:
         fluidsynth_start_new_process32 = False
@@ -428,7 +444,7 @@ def record(record_sec, sr=SR, save=False, filename_wav_out="file.wav"):
         
     '''
  
-    format_read = "int16"
+    format_read = AUDIO_FORMAT_DEFAULT #"int16"
     channels = 1
     chunk = 2048
      
@@ -441,14 +457,14 @@ def record(record_sec, sr=SR, save=False, filename_wav_out="file.wav"):
                         input=True,
                         frames_per_buffer=chunk)
     
-    print "Recording..."
+    print("Recording...")
     frames = []
      
     for _ in range(0, int(sr / chunk * record_sec)):
         data = stream.read(chunk)
         frames.append(data)        
     
-    print "Finished recording."
+    print("Finished recording.")
           
     # Stop Recording
     stream.stop_stream()
@@ -458,10 +474,11 @@ def record(record_sec, sr=SR, save=False, filename_wav_out="file.wav"):
     # Convert the pyaudio string to numpy number format
     audio_data = np.hstack(map(lambda x: np.fromstring(x,dtype=AUDIO_FORMAT_MAP[format_read][0]), frames))
     
-    # Reshape the data to ooutput the desired number of channels  
-    audio_data = np.reshape(audio_data, (len(audio_data)/channels, channels))         
+    # Reshape the data to output the desired number of channels
+    if channels == 2:  
+        audio_data = np.reshape(audio_data, (len(audio_data)/channels, channels))         
     
     if save:
-        write_wav(filename_wav_out, audio_data, sr, norm=False)
+        lb_write_wav(filename_wav_out, audio_data, sr, norm=False)
     
     return(audio_data)

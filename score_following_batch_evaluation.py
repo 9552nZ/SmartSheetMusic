@@ -1,19 +1,30 @@
-import numpy as np
-import score_following
+'''
+The scripts wraps around the MatcherEvaluator class and runs a batch of evaluations:
+- multiple tracks
+- multiple corruption configs
+- multiple matchers configs
+It parallelises some of the task to fasten the process
+'''
+
 import pickle
 import utils_audio_transcript as utils
 import pandas as pd
 from multiprocessing import Process, Manager
 from operator import setitem
 from os.path import exists
+from os import remove
+from matcher_evaluation import MatcherEvaluator
+from score_following import Matcher
+import config
 
-def run_matcher_evaluation(wd, filename_mid, config_matcher, idx_config_matcher, alignement_stats_all, idx_mid):
+def run_matcher_evaluation(wd, filename_mid, config_matcher, idx_config_matcher, alignement_stats_all, idx_mid, pickle_matcher=False):
     '''
     This function runs the matcher evaluation procedure for 
     one track/one config_matcher/multiple corruptions. 
     '''
     # Run the matcher evaluation
-    matcher_evaluator = score_following.MatcherEvaluator(wd, filename_mid, config_matcher=config_matcher)
+    
+    matcher_evaluator = MatcherEvaluator(Matcher, wd, filename_mid, config_matcher=config_matcher, configs_corrupt=config.configs_corrupt)
     matcher_evaluator.main_evaluation()
     
     # Augment the alignement_stats with the track name and the config number
@@ -23,11 +34,12 @@ def run_matcher_evaluation(wd, filename_mid, config_matcher, idx_config_matcher,
     # Replace the Manager.list item with the alignement_stats
     alignement_stats_all[idx_mid] = matcher_evaluator.alignement_stats
     
-    # Pickle the output of the matcher evaluation
-    filename_pkl = utils.change_file_format(filename_mid, '.mid', '.pkl', append = '_matcher_evaluator') 
-    output = open(wd+filename_pkl, 'wb')
-    pickle.dump(matcher_evaluator, output)
-    output.close()    
+    # Pickle the output of the matcher evaluation if need be
+    if pickle_matcher:
+        filename_pkl = utils.change_file_format(filename_mid, '.mid', '.pkl', append = '_matcher_evaluator') 
+        output = open(wd+filename_pkl, 'wb')
+        pickle.dump(matcher_evaluator, output)
+        output.close()    
     
     return()
 
@@ -92,27 +104,22 @@ def format_alignment_stats(wd, filename_stats_pkl):
     # Output as dataframe
     df = df = pd.DataFrame(df)
     
-    return(df)
-    
+    return(df)   
  
 if __name__ == '__main__':
+
+    wd = utils.WD_MATCHER_EVALUATION  
     
-    wd = "C:\Users\Alexis\Business\SmartSheetMusic\Samples\TestScoreFollowing/"
+    # Retrieve of all the midi files in the evaluation universe
+    filenames_mid = config.filenames_mid
     
-    # List of all the midi files in the evaluation universe
-    filenames_mid = [ 
-        "Bach_BWV871-02_002_20090916-SMD.mid",
-        "Bach_BWV888-02_008_20110315-SMD.mid",
-        "Bartok_SZ080-02_002_20110315-SMD.mid",
-#         "Beethoven_Op027No1-02_003_20090916-SMD.mid",
-        "Chopin_Op028-01_003_20100611-SMD.mid",
-    ]
+    # Retrieve List the concurrent configs for the matcher
+    configs_matcher = config.configs_matcher
     
-    # List the concurrent configs for the matcher
-    configs_matcher = []
-    for diag_cost in np.arange(0.8, 2.2, 0.2):
-#     for diag_cost in np.arange(2.0, 2.2, 0.2):
-        configs_matcher.append({'diag_cost':diag_cost})
+    # Clean the file of stats if it already exists
+    filename_stats_pkl = 'alignments_stats.pkl'    
+    if exists(wd+filename_stats_pkl):
+        remove(wd+filename_stats_pkl)
     
     # Loop over the configs
     for k in range(len(configs_matcher)):
@@ -135,5 +142,5 @@ if __name__ == '__main__':
         alignement_stats_all = [item for sublist in list(alignement_stats_all) for item in sublist] 
         
         # Pickle the stats to disk    
-        save_alignment_stats(wd, 'alignments_stats.pkl', alignement_stats_all)            
+        save_alignment_stats(wd, filename_stats_pkl, alignement_stats_all)            
         
