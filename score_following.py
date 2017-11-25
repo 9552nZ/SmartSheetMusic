@@ -161,6 +161,7 @@ class Matcher():
         self.nb_feature_chromagram = self.chromagram_act.shape[1]
         
     @staticmethod
+    # TODO: get rid of the arguments that can be accessed internally
     def compute_chromagram(y, sr, hop_length, compute_chromagram_fcn, compute_chromagram_fcn_kwargs, mode):
         '''
         Wrapper function to compute the chromagram.
@@ -361,7 +362,7 @@ class Matcher():
         
         # Only possible if the input file was a '.mid' in the first place
         if self.file_extension == '.mid':
-            self.position_tick = self.midi_obj.time_to_tick(self.position_sec[-1])
+            self.position_tick = self.midi_obj.time_to_tick(self.position_sec[-1])            
         
     def plot_dtw_distance(self, paths=[-1]):
         '''
