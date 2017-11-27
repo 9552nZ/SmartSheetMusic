@@ -104,6 +104,7 @@ class Matcher():
         # Initialise the best_paths, in order to keep the best path at each iteration
         # (one iteration correspond to one update of the live feed)
         self.best_paths = []
+        self.best_paths_distance = []
         
         # Check if we need to store the best paths
         self.use_low_memory = use_low_memory       
@@ -338,10 +339,12 @@ class Matcher():
         idx_est = self.idx_est               
         idx_act = np.nanargmin(self.cum_distance[0:self.idx_act+1,idx_est])
 
-        best_path = CellList([idx_act], [idx_est])       
+        best_path = CellList([idx_act], [idx_est])
+        best_path_distance = []       
             
         # Iterate until the starting point
         while idx_act > 0 or idx_est > 0:
+            best_path_distance.append(self.cum_distance[idx_act,idx_est])
             cells = self.find_cells(idx_act, idx_est)  
             best_path_local = self.find_best_path(cells, False)
             (idx_act, idx_est) = best_path_local.get_cell_as_tuple(0) 
@@ -349,7 +352,8 @@ class Matcher():
             
         # Keep the best path for successive iterations
         # (the history of the best paths could be dropped at a later stage) 
-        self.best_paths.append(best_path)        
+        self.best_paths.append(best_path)
+        self.best_paths_distance.append(list(reversed(best_path_distance)))      
         
     def update_position(self):        
         '''
@@ -357,12 +361,13 @@ class Matcher():
         In the case we have the midi_object available, also report the position in ticks
         '''
         
-        self.position.append(self.idx_act)
+#         self.position.append(self.idx_act) # RESTORE, MAYBE.... 
+        self.position.append(np.nanargmin(self.cum_distance[0:self.idx_act+1,self.idx_est]))
         self.position_sec.append(self.position[-1] * self.hop_length_act / float(self.sr_act))
         
         # Only possible if the input file was a '.mid' in the first place
         if self.file_extension == '.mid':
-            self.position_tick = self.midi_obj.time_to_tick(self.position_sec[-1])            
+            self.position_tick = self.midi_obj.time_to_tick(self.position_sec[-1])
         
     def plot_dtw_distance(self, paths=[-1]):
         '''
@@ -388,7 +393,38 @@ class Matcher():
         
         # Plot chromagram_est (up to idx_est). Will need to amend to sr_est and hop_length_est at some point...
         utils.plot_chromagram(self.chromagram_est[0:self.idx_est,:], sr=self.sr_act, hop_length=self.hop_length_act, ax=axarr[1], xticks_sec=True)
-        axarr[1].set_title('Chromagram est')                         
+        axarr[1].set_title('Chromagram est')   
+        
+    def offline_alignment(self, audio_data_est):
+        '''
+        Align a target raw audio.
+        The raw audio needs to be sampled as per the matcher's sample rate.
+        Though the process is offline because we pass in the entire audio set, the 
+        actual alignment does not use any forward-looking data.
+        
+        Return a mapping between the times of the target audio vs times of the "true" audio.  
+        '''
+        
+        # Compute the chromagram, use the engine of the matcher to ensure that both chromagrams have 
+        # been computed with the same procedure.            
+        chromagram_est = self.compute_chromagram(audio_data_est,                                                                    
+                                                 self.sr_act, 
+                                                 self.hop_length_act,                                                        
+                                                 self.compute_chromagram_fcn, 
+                                                 self.compute_chromagram_fcn_kwargs,
+                                                 self.chromagram_mode)                                                         
+         
+        # Run the online alignment, frame by frame
+        nb_frames_est = chromagram_est.shape[0]
+        for n in range(nb_frames_est):
+            self.main_matcher(chromagram_est[n,:])
+            
+        # Keep the alignment output
+        # Not sure whether we should add/take out one frame... Also, we should use matcher_tmp.sr_est once possible
+        times_cor_est = np.arange(nb_frames_est) * self.hop_length_act / float(self.sr_act) 
+        times_ori_est = np.array(self.position_sec)
+        
+        return([times_cor_est, times_ori_est])                                 
                                                         
     def main_matcher(self, chromagram_est_row): 
         '''

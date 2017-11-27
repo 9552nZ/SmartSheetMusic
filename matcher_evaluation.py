@@ -83,34 +83,18 @@ class MatcherEvaluator():
             matcher_tmp = copy.deepcopy(matcher)
             
             # Load the audio data
-            audio_data_est = lb.core.load(self.wd + filename_wav_corrupt, sr = matcher_tmp.sr_act)[0]
+            audio_data_est = lb.core.load(self.wd + filename_wav_corrupt, sr=matcher_tmp.sr_act)[0]
             
             # Find the starting and ending rests
             rests = utils.find_start_end_rests(audio_data_est, matcher_tmp.sr_act) # No need to pass in hop_size and n_fft
             self.times_rests.append(rests)
             
-            # Compute the chromagram, use the engine of the matcher to ensure that both chromagrams have 
-            # been computed with the same procedure.
-            chromagram_est = self.class_matcher.compute_chromagram(audio_data_est,                                                                    
-                                                                   self.sr, 
-                                                                   self.hop_length,                                                        
-                                                                   matcher_tmp.compute_chromagram_fcn, 
-                                                                   matcher_tmp.compute_chromagram_fcn_kwargs,
-                                                                   matcher_tmp.chromagram_mode)                                                         
-            
-            # Run the online alignment, frame by frame
-            nb_frames_est = chromagram_est.shape[0]
-            for n in range(nb_frames_est):
-                matcher_tmp.main_matcher(chromagram_est[n,:])
-                
-            # Keep the alignment output
-            # Not sure whether we should add/take out one frame... Also, we should use matcher_tmp.sr_est once possible
-            times_cor_est = np.arange(nb_frames_est) * matcher_tmp.hop_length_act / float(matcher_tmp.sr_act) 
-            times_ori_est = np.array(matcher_tmp.position_sec)
+            # Perform the offline alignment and append the results
+            [times_cor_est, times_ori_est] = matcher_tmp.offline_alignment(audio_data_est)
             self.times_est_all.append(np.array([times_cor_est, times_ori_est]).T)
             
             # Keep the matchers (for reporting only, may be removed at a later stage)
-            self.matchers.append(matcher_tmp)            
+            self.matchers.append(matcher_tmp)                     
                 
     def evaluate(self):
         '''
