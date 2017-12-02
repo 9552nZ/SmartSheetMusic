@@ -90,7 +90,7 @@ class MatcherEvaluator():
             self.times_rests.append(rests)
             
             # Perform the offline alignment and append the results
-            [times_cor_est, times_ori_est] = matcher_tmp.offline_alignment(audio_data_est)
+            [times_cor_est, times_ori_est] = matcher_tmp.match_batch(audio_data_est)
             self.times_est_all.append(np.array([times_cor_est, times_ori_est]).T)
             
             # Keep the matchers (for reporting only, may be removed at a later stage)

@@ -40,7 +40,7 @@ class MatcherManager():
     '''
     def __init__(self, filename_mid_full, callback_fcn):
 #         self.chunk = 16384/16 # The chunk of data processed per pyaudio batch
-        self.chunk = 16384/4        
+        self.chunk = 16384/16        
         self.sr = utils.SR # Sample rate
         self.hop_length = utils.HOP_LENGTH 
         self.audio_format = utils.AUDIO_FORMAT_DEFAULT # The low-level audio format
@@ -63,7 +63,6 @@ class MatcherManager():
      
         # Initialise the music detecter
         if self.detect_music:
-#             self.music_detecter = MusicDetecter(utils.WD_AUDIOSET + "VerifiedDataset\\VerifiedDatasetNoiseAdded\\", self.sr)
             self.music_detecter = MusicDetecter(utils.WD_AUDIOSET + "VerifiedDataset\\VerifiedDatasetRecorded\\", self.sr)
         
         # Start the publishing socket
@@ -142,38 +141,15 @@ class MatcherManager():
         Check if we should start the matching procedure.
         The function ensures that music has been detected.        
         '''
-#         ready = True
-#         if len(self.audio_data) < self.min_len_sample:
-#             ready = False
             
         if self.detect_music:
             audio_data = np.array(self.audio_data)
-            ready = self.music_detecter.detect(audio_data[len(self.audio_data)-self.music_detecter.mlp.nb_sample:len(self.audio_data)])
-#             chromagram_detect = chroma_cqt(audio_data,
-#                                            sr=self.sr,
-#                                            hop_length=self.hop_length, 
-#                                            norm=np.inf, 
-#                                            n_chroma=84)
-            
-            chromagram_detect = chroma_stft(audio_data,
-                               sr=self.sr,
-                               hop_length=self.hop_length,
-                               n_fft=2*self.hop_length,
-                               norm=np.inf, 
-                               n_chroma=84)
-            
-#             import matplotlib.pyplot as plt
-#             plt.ion()
-#             plt.plot(np.array(self.audio_data))
-            mean_chroma_sq = np.mean(chromagram_detect**2, axis=0)
-#             print mean_chroma_sq
-            mean_chroma_sq_fast = DataFrame(mean_chroma_sq).ewm(halflife=2).mean().as_matrix().squeeze()[-1]
-            mean_chroma_sq_slow = DataFrame(mean_chroma_sq).ewm(halflife=10).mean().as_matrix().squeeze()[-1]
-#             print "fast: {:.3f}       slow: {:.3f}".format(mean_chroma_sq_fast,mean_chroma_sq_slow)
-            
-            if mean_chroma_sq_fast <= 0.06 and self.status_matcher == PAUSE:
+            audio_data_last = audio_data[len(self.audio_data)-self.music_detecter.mlp.nb_sample:len(self.audio_data)]
+            music_detected = self.music_detecter.detect(audio_data_last)
+                        
+            if music_detected and self.status_matcher == PAUSE:
                 self.status_matcher = MATCH
-            elif mean_chroma_sq_slow >= 0.2 and self.status_matcher == MATCH:
+            elif not music_detected and self.status_matcher == MATCH:
                 self.status_matcher = PAUSE
         else:
             self.status_matcher = MATCH                                
@@ -198,12 +174,8 @@ class MatcherManager():
         # We compute the chromagram only for CHUNK samples.
         # Not sure this is ideal, we may want to keep some history of the audio 
         # input and compute the chromagram based on that.    
-        chromagram_est = Matcher.compute_chromagram(self.audio_data,
-                                           self.matcher.sr_act,
-                                           self.matcher.hop_length_act,                                             
-                                           self.matcher.compute_chromagram_fcn, 
-                                           self.matcher.compute_chromagram_fcn_kwargs,
-                                           self.matcher.chromagram_mode)                                                            
+        chromagram_est = Matcher.compute_chromagram(self.audio_data)
+                                                               
 #         print "Time: {}   Size chromagram:{}    Size audio: {}".format(datetime.datetime.now().time(), chromagram_est.shape,  len(self.audio_data))
         
         # Only run the matching over the last (len(new_audio_data)/self.hop_length) segments of the chromagram        
@@ -302,17 +274,11 @@ if __name__ == '__main__':
      
     matcher_manager = MatcherManager(filename_mid, callback_fcn)    
     
-    t1 = datetime.datetime.now() # REMOVE 
-    t2 = datetime.datetime.now()
-#     while matcher_manager.stream.is_active() and (t2-t1).seconds < 10:
     while matcher_manager.stream.is_active():
 #         matcher_manager.plot_chromagram()
 #         matcher_manager.plot_spectrogram()
-#         matcher_manager.publish_position()
-        t2 = datetime.datetime.now()
+        matcher_manager.publish_position()
         sleep(matcher_manager.chunk/float(matcher_manager.sr))
         
     matcher_manager.stream.stop_stream()
     matcher_manager.stream.close()    
-    a = 1
-          
