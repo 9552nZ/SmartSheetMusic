@@ -32,6 +32,7 @@
 - http://colinraffel.com/publications/thesis.pdf
 - http://www.ee.columbia.edu/ln/rosa/matlab/alignmidi/
 - http://nbviewer.jupyter.org/github/craffel/alignment-search/blob/master/overview.ipynb
+- https://arxiv.org/pdf/1606.01601.pdf
 
 ## Audio Databases
 - https://staff.aist.go.jp/m.goto/RWC-MDB/
