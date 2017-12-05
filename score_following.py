@@ -5,39 +5,61 @@ import utils_audio_transcript as utils
 import pretty_midi
 import matplotlib.pyplot as plt
 from math import ceil
-        
-class CellList():
-    '''
-    Class to handle list of cells.
-    A cell is simply a tuple of coordinates (i,j) modeling the position in
-    the cum_distance matrix.
-    '''
-    def __init__(self, rows, cols):
-        
-        self.len = len(rows)
-        assert self.len == len(cols) 
-        self.rows = rows
-        self.cols = cols    
-        
-    def __repr__(self):
-        return(np.array([np.array(self.rows).T, np.array(self.cols).T]).__repr__())   
 
-    def append(self, cell):
-        self.len += cell.len         
-        self.rows.extend(cell.rows)
-        self.cols.extend(cell.cols)
+class CellList():    
+    '''
+    Class to handle a triplet (s, w, sw) of cells.
+    Cells are represented as tuples of integers.
+    '''
+    def __init__(self, s=None, w=None, sw=None):
+        '''
+        Fill the triplet.
+        The idx is not None only if the cell actually exists and is non-nan. 
+        '''        
+        self.idxs = [s, w, sw]
         
-    def prepend(self, cell):
-        self.len += cell.len
-        self.rows = cell.rows + self.rows
-        self.cols = cell.cols + self.cols 
-        
-    def get_cell(self, idx):        
-        return(CellList([self.rows[idx]], [self.cols[idx]]))
+    def get(self, idx, cum_distance):
+        '''
+        Get the cum_distance based on a target step (where we come from).
+        idx = 0 --> s
+        idx = 1 --> w
+        idx = 2 --> sw
+        '''
+        if self.idxs[idx] is None:
+            return(np.nan)        
+        else:
+            return(cum_distance[self.idxs[idx]])
     
-    def get_cell_as_tuple(self, idx):
-        return((self.rows[idx], self.cols[idx]))
-
+    def find_best_step(self, cum_distance, cur_cost, diag_cost):
+        '''
+        The function computes the local DTW step, adjusting for the diagonal penalty.        
+        It returns the optimal distance and the optimal step.
+        '''                
+        d = np.array([cur_cost + self.get(0, cum_distance), 
+                      cur_cost + self.get(1, cum_distance), 
+                      diag_cost*cur_cost + self.get(2, cum_distance)])            
+                            
+        argmin = np.nanargmin(d)            
+                    
+        return(d[argmin], argmin)
+    
+    @staticmethod
+    def step_to_idxs(step, idx_act, idx_est):
+        '''
+        Map a step in (0,1,2) to the change in (idx_act, idx_est)
+        ''' 
+        if step == 0:
+            return(idx_act-1, idx_est)
+        elif step == 1:
+            return(idx_act, idx_est-1)
+        elif step == 2:
+            return(idx_act-1, idx_est-1)
+        else:
+            ValueError('Step not valid')        
+        
+#     def __repr__(self):
+#         return(np.array([np.array(self.rows).T, np.array(self.cols).T]).__repr__())   
+# 
 
 class Matcher():
     '''
@@ -99,9 +121,12 @@ class Matcher():
         # Initialise large empty matrices for chromagram_est and for the cumulative distance matrix
         self.chromagram_est = np.zeros((max(self.len_chromagram_act*2, 2000), self.nb_feature_chromagram))
         self.chromagram_est.fill(np.nan)
-#         self.cum_distance = np.zeros((self.chromagram_est.shape[0], self.chromagram_est.shape[0]), dtype='float16')
         self.cum_distance = np.zeros((self.chromagram_act.shape[0], self.chromagram_est.shape[0]), dtype='float16')
         self.cum_distance.fill(np.nan)
+        
+        # Initialise large empty matrices for the steps
+        self.steps = np.zeros((self.chromagram_act.shape[0], self.chromagram_est.shape[0]), dtype='int16')
+        self.steps.fill(np.iinfo(np.int16).min)
                 
         # Initialise the best_paths, in order to keep the best path at each iteration
         # (one iteration correspond to one update of the live feed)
@@ -211,72 +236,40 @@ class Matcher():
         '''
         The function identifies the cells that should be evaluated.
         Refer to Figure 2 of http://eecs.qmul.ac.uk/~simond/pub/2005/dafx05.pdf
-        for detail on the possible cases        
-         
+        for detail on the possible cases.        
+          
         '''
-        
+         
         if i-1 < 0:
-            return(CellList([i],[j-1]))            
-            
+            return(CellList(w=(i, j-1)))            
+             
         if j-1 < 0:
-            return(CellList([i-1],[j]))
-        
+            return(CellList(s=(i-1,j)))
+         
         isnan_s = np.isnan(self.cum_distance[i-1, j])
         isnan_w = np.isnan(self.cum_distance[i, j-1])
         isnan_sw = np.isnan(self.cum_distance[i-1, j-1])       
-        
+         
         # Standard case: compute everything        
         if not isnan_s and not isnan_w and not isnan_sw:
-            return(CellList([i-1, i, i-1],[j, j-1, j-1]))
-        
+            return(CellList(s=(i-1, j), w=(i, j-1), sw=(i-1,j-1)))
+         
         # Edge case: nothing to compute.  
         elif isnan_s and isnan_w and isnan_sw:
-            print('Could not find any valid cell leading to  {}, {}'.format(i, j))
-            return(CellList([], []))
-        
+            ValueError('Could not find any valid cell leading to  {}, {}'.format(i, j))            
+         
         # Otherwise, find the relevant cells to compute
         elif isnan_s and isnan_sw:
-            return(CellList([i],[j-1]))
-        
+            return(CellList(w=(i,j-1)))
+         
         elif isnan_w and isnan_sw:
-            return(CellList([i-1],[j]))
-        
+            return(CellList(s=(i-1,j)))
+         
         elif isnan_s:
-            return(CellList([i,i-1], [j-1, j-1]))
-        
+            return(CellList(w=(i,j-1), sw=(i-1,j-1)))
+         
         elif isnan_w:
-            return(CellList([i-1, i-1],[j, j-1]))
-
-                                                                
-    def find_best_path(self, cells, return_distance):
-        '''
-        The function computes the local DTW path, adjusting for the weigths.
-        It relies on the cells being passed such that the diagonal is the 
-        last item (if two or three elements).
-        
-        It can either return the min distance or the min path.
-        '''
-                    
-        if cells.len == 3:
-            d = np.array([self.cum_distance[cells.get_cell_as_tuple(0)], 
-                          self.cum_distance[cells.get_cell_as_tuple(1)], 
-                          self.diag_cost * self.cum_distance[cells.get_cell_as_tuple(2)]])            
-                    
-        elif cells.len == 2:            
-            d = np.array([self.cum_distance[cells.get_cell_as_tuple(0)], self.diag_cost * self.cum_distance[cells.get_cell_as_tuple(1)]])
-            
-        elif cells.len == 1:
-            d = np.array([self.cum_distance[cells.get_cell_as_tuple(0)]])
-            
-        else:
-            d = np.array([np.nan])
-        
-        argmin = np.argmin(d)
-        
-        if return_distance:                
-            return(d[argmin])
-        else:
-            return(cells.get_cell(argmin))
+            return(CellList(s=(i-1,j), sw=(i-1,j-1)))
                             
     def update_cum_distance(self, direction):
         '''
@@ -307,9 +300,10 @@ class Matcher():
             idx_est = self.idx_est
             
             for k in np.arange(max(idx_est-self.search_width+1, 0), idx_est+1):                
-                distance = utils.distance_chroma(self.chromagram_act[idx_act, :], self.chromagram_est[k, :])                
-                cells = self.find_cells(idx_act, k)
-                self.cum_distance[idx_act, k] = distance + self.find_best_path(cells, True)                                                                 
+                curr_cost = utils.distance_chroma(self.chromagram_act[idx_act, :], self.chromagram_est[k, :])                
+                cells = self.find_cells(idx_act, k)                                                                 
+                (self.cum_distance[idx_act, k], self.steps[idx_act, k]) = cells.find_best_step(self.cum_distance, curr_cost, self.diag_cost)
+                
             return
             
         if direction == 2:
@@ -319,46 +313,45 @@ class Matcher():
             idx_act = self.idx_act
             idx_est = self.idx_est
 
-#             RESTORE
-#             for k in np.arange(max(idx_act-self.search_width+1, 0), idx_act+1):
-#                 distance = utils.distance_chroma(self.chromagram_act[k, :], self.chromagram_est[idx_est, :])
-#                 cells = self.find_cells(k, idx_est)
-#                 self.cum_distance[k, idx_est] = distance + self.find_best_path(cells, True)
-#             return
             min_idx_act = max(idx_act-int(ceil(self.search_width/2.0))+1, 0)
             max_idx_act = min(idx_act+int(ceil(self.search_width/2.0))+1, self.len_chromagram_act)
             for k in np.arange(min_idx_act, max_idx_act):                
-                distance = utils.distance_chroma(self.chromagram_act[k, :], self.chromagram_est[idx_est, :])
+                curr_cost = utils.distance_chroma(self.chromagram_act[k, :], self.chromagram_est[idx_est, :])
                 cells = self.find_cells(k, idx_est)
-                self.cum_distance[k, idx_est] = distance + self.find_best_path(cells, True)
+                (self.cum_distance[k, idx_est], self.steps[k, idx_est]) = cells.find_best_step(self.cum_distance, curr_cost, self.diag_cost)                
             return
 
-
-    def update_best_path(self):
+    def update_best_path(self, max_backtrack=np.inf):
         '''
         Based on the cum distance matrix, this function finds the best path
         Running this function is not required for the main loop, it serves mainly 
         for ex-post analysis.
         ''' 
-
+ 
         idx_est = self.idx_est               
-        idx_act = np.nanargmin(self.cum_distance[0:self.idx_act+1,idx_est])
-
-        best_path = CellList([idx_act], [idx_est])
-        best_path_distance = []       
-            
+        idx_act = np.nanargmin(self.cum_distance[0:self.idx_act+1,idx_est]) # TODO : Look in the entire column!
+ 
+        best_path = ([idx_act], [idx_est])
+        best_path_distance = [self.cum_distance[idx_act, idx_est]]       
+             
         # Iterate until the starting point
-        while idx_act > 0 or idx_est > 0:
-            best_path_distance.append(self.cum_distance[idx_act,idx_est])
-            cells = self.find_cells(idx_act, idx_est)  
-            best_path_local = self.find_best_path(cells, False)
-            (idx_act, idx_est) = best_path_local.get_cell_as_tuple(0) 
-            best_path.append(best_path_local)
-            
+        cnt_backtract = 0
+        while cnt_backtract < max_backtrack and idx_est > 0 :                                    
+             
+            (idx_act, idx_est_new) = CellList.step_to_idxs(self.steps[idx_act, idx_est], idx_act, idx_est)                         
+            cnt_backtract += idx_est - idx_est_new
+             
+            if idx_est - idx_est_new != 0: 
+                best_path_distance.append(self.cum_distance[idx_act,idx_est_new])
+                best_path[0].append(idx_act)
+                best_path[1].append(idx_est_new)
+                 
+            idx_est = idx_est_new
+             
         # Keep the best path for successive iterations
         # (the history of the best paths could be dropped at a later stage) 
         self.best_paths.append(best_path)
-        self.best_paths_distance.append(list(reversed(best_path_distance)))      
+        self.best_paths_distance.append(list(reversed(best_path_distance)))            
         
     def update_position(self):        
         '''
@@ -366,9 +359,9 @@ class Matcher():
         In the case we have the midi_object available, also report the position in ticks
         '''
         
-        self.position.append(self.idx_act) # RESTORE, MAYBE.... 
+#         self.position.append(self.idx_act) # RESTORE, MAYBE.... 
 #         self.position.append(np.nanargmin(self.cum_distance[0:self.idx_act+1,self.idx_est]))
-#         self.position.append(np.nanargmin(self.cum_distance[:,self.idx_est])) # RESTORE!!!!!.... 
+        self.position.append(np.nanargmin(self.cum_distance[:,self.idx_est])) # RESTORE!!!!!.... 
         self.position_sec.append(self.position[-1] * self.hop_length_act / float(self.sr_act))
         
         # Only possible if the input file was a '.mid' in the first place
@@ -478,4 +471,4 @@ class Matcher():
             self.update_position()  
             
             if not self.use_low_memory:                
-                self.update_best_path()            
+                self.update_best_path(10)            
