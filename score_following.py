@@ -35,9 +35,13 @@ class CellList():
         The function computes the local DTW step, adjusting for the diagonal penalty.        
         It returns the optimal distance and the optimal step.
         '''                
-        d = np.array([cur_cost + self.get(0, cum_distance), 
-                      cur_cost + self.get(1, cum_distance), 
-                      diag_cost*cur_cost + self.get(2, cum_distance)])            
+        alpha = 0.94
+#         d = np.array([cur_cost + self.get(0, cum_distance), 
+#                       cur_cost + self.get(1, cum_distance), 
+#                       diag_cost*cur_cost + self.get(2, cum_distance)])            
+        d = np.array([cur_cost + alpha*self.get(0, cum_distance), 
+                      cur_cost + alpha*self.get(1, cum_distance), 
+                      diag_cost*cur_cost + alpha*self.get(2, cum_distance)])
                             
         argmin = np.nanargmin(d)            
                     
@@ -55,7 +59,7 @@ class CellList():
         elif step == 2:
             return(idx_act-1, idx_est-1)
         else:
-            ValueError('Step not valid')        
+            raise(ValueError('Step not valid'))        
         
 #     def __repr__(self):
 #         return(np.array([np.array(self.rows).T, np.array(self.cols).T]).__repr__())   
@@ -106,8 +110,9 @@ class Matcher():
         
         # Initialise position and position_sec and position_tick.  
         # They represent the expected position in the Midi file.
-        self.position = [0]
-        self.position_sec = [0]
+        self.position = 0
+        self.positions = [0]
+        self.positions_sec = [0]
         self.position_tick = 0
         
         # DTW parameters
@@ -219,6 +224,9 @@ class Matcher():
         if idx_est < self.min_data or idx_act < self.min_data:
             return(0)  
         
+        if idx_act >= self.len_chromagram_act - 1:
+            return(2)        
+        
         # Check if the minimum distance is in the last row or in the last column
         arg_min_row = np.nanargmin(self.cum_distance[idx_act,0:idx_est+1])
         arg_min_col = np.nanargmin(self.cum_distance[0:idx_act+1,idx_est])
@@ -329,7 +337,7 @@ class Matcher():
         ''' 
  
         idx_est = self.idx_est               
-        idx_act = np.nanargmin(self.cum_distance[0:self.idx_act+1,idx_est]) # TODO : Look in the entire column!
+        idx_act = self.position
  
         best_path = ([idx_act], [idx_est])
         best_path_distance = [self.cum_distance[idx_act, idx_est]]       
@@ -361,12 +369,13 @@ class Matcher():
         
 #         self.position.append(self.idx_act) # RESTORE, MAYBE.... 
 #         self.position.append(np.nanargmin(self.cum_distance[0:self.idx_act+1,self.idx_est]))
-        self.position.append(np.nanargmin(self.cum_distance[:,self.idx_est])) # RESTORE!!!!!.... 
-        self.position_sec.append(self.position[-1] * self.hop_length_act / float(self.sr_act))
+        self.position = np.nanargmin(self.cum_distance[:,self.idx_est])
+        self.positions.append(self.position) 
+        self.positions_sec.append(self.position * self.hop_length_act / float(self.sr_act))
         
         # Only possible if the input file was a '.mid' in the first place
         if self.file_extension == '.mid':
-            self.position_tick = self.midi_obj.time_to_tick(self.position_sec[-1])
+            self.position_tick = self.midi_obj.time_to_tick(self.positions_sec[-1])
         
     def plot_dtw_distance(self, paths=[-1]):
         '''
@@ -415,8 +424,8 @@ class Matcher():
             
         # Get the alignment output
         # Not sure whether we should add/take out one frame... Also, we should use matcher_tmp.sr_est once possible
-        times_cor_est = np.arange(nb_frames_est) * self.hop_length_act / float(self.sr_act) 
-        times_ori_est = np.array(self.position_sec)
+        times_cor_est = np.arange(nb_frames_est+1) * self.hop_length_act / float(self.sr_act) 
+        times_ori_est = np.array(self.positions_sec)
         
         return(times_cor_est, times_ori_est)
     
@@ -453,22 +462,20 @@ class Matcher():
         # Run the main loop
         while not self.input_advanced:
             
-            # Disable the matching procedure if we are at the end of the act data
-            # In that case, we keep updating the best path (keeping idx_act to the last act value)
-            if self.idx_act >= self.len_chromagram_act - 1:
-                self.idx_est += 1 # Increment the estimated position nonetheless
-                self.update_position()
-                return
+#             # Disable the matching procedure if we are at the end of the act data
+#             # In that case, we keep updating the best path (keeping idx_act to the last act value)
+#             if self.idx_act >= self.len_chromagram_act - 1:
+#                 self.idx_est += 1 # Increment the estimated position nonetheless
+#                 self.update_position()
+#                 return
                      
             direction = self.select_advance_direction()
             self.update_cum_distance(direction)        
-            
-        # Find the best path and the current position
-        # Do not run if we are at the starting point
-        if (self.idx_act > 0 or self.idx_est > 0):                    
-            
-            # Update the estimated current position
-            self.update_position()  
-            
-            if not self.use_low_memory:                
-                self.update_best_path(10)            
+                    
+        # Update the estimated current position
+        self.update_position()  
+        
+        # Find the best path, if need be    
+        if not self.use_low_memory:                
+            self.update_best_path(10)
+         

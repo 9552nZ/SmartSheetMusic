@@ -174,7 +174,7 @@ class MatcherManager():
         # We compute the chromagram only for CHUNK samples.
         # Not sure this is ideal, we may want to keep some history of the audio 
         # input and compute the chromagram based on that.    
-        chromagram_est = Matcher.compute_chromagram(self.audio_data)
+        chromagram_est = self.matcher.compute_chromagram(self.audio_data)
                                                                
 #         print "Time: {}   Size chromagram:{}    Size audio: {}".format(datetime.datetime.now().time(), chromagram_est.shape,  len(self.audio_data))
         
@@ -274,11 +274,17 @@ if __name__ == '__main__':
      
     matcher_manager = MatcherManager(filename_mid, callback_fcn)    
     
+#     t1 = datetime.datetime.now()
     while matcher_manager.stream.is_active():
 #         matcher_manager.plot_chromagram()
 #         matcher_manager.plot_spectrogram()
         matcher_manager.publish_position()
         sleep(matcher_manager.chunk/float(matcher_manager.sr))
+        t2 = datetime.datetime.now()
+        
+#         if (t2-t1).total_seconds() > 5.0:            
+#             raise(ValueError('Time lapsed!!'))
+        
         
     matcher_manager.stream.stop_stream()
     matcher_manager.stream.close()    

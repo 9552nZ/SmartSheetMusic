@@ -6,54 +6,30 @@ import numpy as np
 print('!!! Remove seed setting in midi corruption!!!!')
 np.random.seed(1)
 
-
-# def warp_time(original_times, std):
-#     """
-#     Computes a random smooth time offset.
-# 
-#     Parameters
-#     ----------
-#     original_times : np.ndarray
-#         Array of original times, to be warped
-#     std : float
-#         Standard deviation of smooth noise.
-# 
-#     Returns
-#     -------
-#     warp_offset : np.ndarray
-#         Smooth time warping offset, to be applied by addition
-#     """
-#     N = original_times.shape[0]
-#     # Invert a random spectra, with most energy concentrated
-#     # on low frequencies via exponential decay
-#     warp_offset = np.fft.irfft(
-#         N*std*np.random.randn(N)*np.exp(-np.arange(N)))[:N]
-#     return warp_offset
-
 def add_silence(midi_object, start_silence=0.0, silence_length=1.0):
     '''
     Add a fixed-length silence in the midi file. 
     Shift all the notes and event as per the silence length.
-    
+     
     Parameters
     ----------
     midi_object : pretty_midi.PrettyMIDI
         MIDI object, notes and event will be modified.
-        
+         
     start_silence : float>=0
         The starting point for the silence (in secs)
-        
+         
     silence_length : float>=0
         the length of the silence (in secs).
-    
+     
     '''
-    
+     
     for inst in midi_object.instruments:
         for note in inst.notes:
             if note.start > start_silence:
                 note.start += silence_length
                 note.end += silence_length 
-    
+     
         # Move all events within the interval to the start
         for events in [inst.control_changes, inst.pitch_bends]:
             for event in events:
@@ -83,9 +59,9 @@ def remove_segment(midi_object, original_times, start_segment=0.0, remove_length
     
     crop_offset = crop_time(midi_object, original_times, start_segment,start_segment + remove_length)
     adjusted_times = original_times + crop_offset
-    adjusted_times = np.maximum.accumulate(adjusted_times)
-#     adjusted_times = np.hstack((adjusted_times[0], np.cumsum(np.maximum(np.diff(adjusted_times),np.zeros(original_times.shape[0]-1)))))    
-    midi_object.adjust_times(original_times, original_times + crop_offset)
+    adjusted_times = np.maximum.accumulate(adjusted_times)    
+#     midi_object.adjust_times(original_times, original_times + crop_offset)
+    midi_object.adjust_times(original_times, adjusted_times)
     
     return(adjusted_times)
         
@@ -280,7 +256,9 @@ def corrupt_midi(midi_object, original_times,
                  warp_func = None, warp_func_args = {},
                  start_crop_prob = 0.0, end_crop_prob = 0.0,
                  middle_crop_prob = 0.0, remove_inst_prob = 0.0,
-                 change_inst_prob = 0.0, velocity_std = 0.0):
+                 change_inst_prob = 0.0, velocity_std = 0.0,
+                 add_silence=False, start_silence=0.0, silence_length=0.0,
+                 delete_segment=False, start_segment=0.0, remove_length=0.0):
     '''
     Apply a series of corruptions to a MIDI object.
 
@@ -358,5 +336,12 @@ def corrupt_midi(midi_object, original_times,
     # Apply the time warps computed above
 #     adjusted_times = original_times + warp_offset + crop_offset
     midi_object.adjust_times(original_times, adjusted_times)
+    
+    if add_silence:
+        adjusted_times = [x if x < start_silence else x + silence_length for x in adjusted_times]
+        midi_object.adjust_times(original_times, adjusted_times)
+     
+    if delete_segment:
+        adjusted_times = remove_segment(midi_object, original_times, start_segment=start_segment, remove_length=remove_length)        
     
     return adjusted_times, diagnostics

@@ -5,6 +5,7 @@ from librosa.util import frame
 from sys import executable
 from datetime import timedelta
 from math import ceil
+from os.path import getsize
 
 
 # Constants
@@ -154,7 +155,45 @@ def plot_dtw_distance(cum_distance):
     plt.pcolor(cum_distance, cmap=Blues, alpha=0.8, vmin=np.nanmin(cum_distance), vmax=np.nanmax(cum_distance))
     plt.colorbar()
     
-    return()    
+    return()
+
+def plot_alignment(times_cor_est, times_ori_est, times_cor_act, times_ori_act):
+    '''
+    Create to plots to evaluate the alignment output of the matching procedure:
+    - plot 1: actual original time vs actual corrupted time / estimated original times vs estimated corrupted times
+    - plot 2: alignment error, the y axis represents the difference to "true" alignment    
+    '''
+    
+    import matplotlib.pyplot as plt
+    
+    # Calc the alignment error
+    alignment_error = calc_alignment_stats(times_cor_est, times_ori_est, times_cor_act, times_ori_act)
+    
+    max_time = max(np.max(times_cor_est), np.max(times_ori_est), np.max(times_cor_act), np.max(times_ori_act))
+    
+    fig = plt.figure()
+    ax = fig.add_subplot(211)    
+    ax.plot(times_ori_act, times_cor_act)
+    ax.plot(times_ori_est, times_cor_est)
+    plt.ylabel('Corrupted time (secs)')
+    plt.xlabel('Original time (secs)')
+    plt.legend(['Actual', 'Estimated'])
+    plt.title('Corrupted and original times')
+    plt.xlim(0, max_time)
+    
+#     ax = fig.add_subplot(312)
+#     ax.plot(times_ori_est, alignment_error)
+#     plt.title('Alignment error')
+#     plt.xlabel('Original time (secs)')
+#     plt.xlim(0, max_time)
+    
+    ax = fig.add_subplot(212)
+    ax.plot(times_cor_est, alignment_error)
+    plt.title('Alignment error')
+    plt.xlabel('Corrupted time (secs)')
+    plt.xlim(0, max_time)    
+    
+    return()
 
 def write_wav(filename, data, rate = 44100):
     """ 
@@ -418,7 +457,7 @@ def calc_nb_sample_stft(sr, hop_length, nb_sec):
     return(int(ceil(sr*float(nb_sec)/hop_length)) * hop_length-1)
     
 
-def record(record_sec, sr=SR, save=False, filename_wav_out="file.wav"):
+def record(record_sec, sr=SR, audio_format = AUDIO_FORMAT_DEFAULT, save=False, filename_wav_out="file.wav"):
     '''
     Record the input sound from the micro using pyaudio.
     We can save the output into a .wav file or return as numpy array.
@@ -442,16 +481,14 @@ def record(record_sec, sr=SR, save=False, filename_wav_out="file.wav"):
     audio_data : np.ndarray
         The recorded waveform as a numpy array.
         
-    '''
- 
-    format_read = AUDIO_FORMAT_DEFAULT #"int16"
+    '''     
     channels = 1
     chunk = 2048
      
     audio = PyAudio()
      
     # Start Recording
-    stream = audio.open(format=AUDIO_FORMAT_MAP[format_read][1], 
+    stream = audio.open(format=AUDIO_FORMAT_MAP[audio_format][1], 
                         channels=channels,
                         rate=sr, 
                         input=True,
@@ -460,7 +497,7 @@ def record(record_sec, sr=SR, save=False, filename_wav_out="file.wav"):
     print("Recording...")
     frames = []
      
-    for _ in range(0, int(sr / chunk * record_sec)):
+    for _ in range(0, int(sr / float(chunk) * record_sec)):
         data = stream.read(chunk)
         frames.append(data)        
     
@@ -472,7 +509,7 @@ def record(record_sec, sr=SR, save=False, filename_wav_out="file.wav"):
     audio.terminate()
     
     # Convert the pyaudio string to numpy number format
-    audio_data = np.hstack(map(lambda x: np.fromstring(x,dtype=AUDIO_FORMAT_MAP[format_read][0]), frames))
+    audio_data = np.hstack(map(lambda x: np.fromstring(x,dtype=AUDIO_FORMAT_MAP[audio_format][0]), frames))
     
     # Reshape the data to output the desired number of channels
     if channels == 2:  
@@ -482,3 +519,110 @@ def record(record_sec, sr=SR, save=False, filename_wav_out="file.wav"):
         lb_write_wav(filename_wav_out, audio_data, sr, norm=False)
     
     return(audio_data)
+
+def start_and_record(filename, filename_new, sr=SR):
+    '''
+    Launch a wave file via MPC (branching a new process) and record it through the mic.
+    
+    Parameters
+    ----------
+    filename : str
+        The full path for the wave file that we want to launch and record.
+        
+    filename_new : str
+        The full path for the new wave file that has been recorded.
+        
+    sr : int 
+        The sampling rate
+             
+    '''
+    
+    from subprocess import Popen
+    
+    # Flag to detach teh process from the python thread
+    # Without it, we would wait for the output of the command.
+    DETACHED_PROCESS = 0x00000008    
+    
+    # Find the lenghts (in secs) of teh target wave file.
+    record_length = get_length_wav(filename)
+    
+    # Launch the wav via MPC.
+    cmd = r'C:\\Program Files\\MPC-HC\\mpc-hc64.exe {}'.format(filename)        
+    p = Popen(cmd,shell=False,stdin=None,stdout=None,stderr=None,close_fds=True,creationflags=DETACHED_PROCESS)
+    
+    # Record. 
+    # Add 0.1 sec as the starting of the recording takes some time
+    # Store in int16 format (in float32, the recorded wav appears corrupted for some reason).
+    record(record_length + 0.1,   
+           sr=sr, 
+           audio_format="int16", 
+           save=True, 
+           filename_wav_out=filename_new)            
+
+def get_length_wav(filename):
+    '''
+    Get the length in seconds of a wave file.
+    
+    Parameters
+    ----------
+    filename : str
+        The full path for the wave file.
+        
+    Returns:
+    s : float
+        The length of the file in seconds.
+    
+    '''
+        
+    f = open(filename,"r")
+
+    #read the ByteRate field from file (see the Microsoft RIFF WAVE file format)
+    #https://ccrma.stanford.edu/courses/422/projects/WaveFormat/
+    #ByteRate is located at the first 28th byte
+    f.seek(28)
+    a=f.read(4)
+    
+    #convert string a into integer/longint value
+    #a is little endian, so proper conversion is required
+    byte_rate = 0
+    for i in range(4):
+        byte_rate = byte_rate + ord(a[i])*pow(256,i)
+    
+    #get the file size in bytes
+    file_size = getsize(filename)
+    f.close()  
+    
+    #the duration of the data, in seconds, is given by
+    s = ((file_size-44))/float(byte_rate)   
+    
+    return(s)
+
+def calc_mean_random_distance(chromagram):
+    '''
+    Take a chromagram as input and calculate the mean distance between 
+    two random chromas.
+    This may serve as a comparison to see how the DTW alignment performs.
+
+    Parameters
+    ----------
+    chromagram : np.ndarray (nb frames x nb chromas)
+        The input chromagram. We assume it has been adequately normalised
+               
+    Returns
+    -------
+    mean_dist : float
+        The mean random distance.    
+    
+    '''
+    
+    len_chromagram = chromagram.shape[0]
+    nb_boot = 1000
+    boot_idx = np.random.randint(0, len_chromagram, size=(nb_boot,2))
+    
+    dists = np.empty(nb_boot)
+    for k in range(nb_boot):
+        dists[k] = distance_chroma(chromagram[boot_idx[k,0],:], chromagram[boot_idx[k,1],:])
+        
+    mean_dist = np.mean(dists)
+    
+    return(mean_dist)
