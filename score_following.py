@@ -30,15 +30,13 @@ class CellList():
         else:
             return(cum_distance[self.idxs[idx]])
     
-    def find_best_step(self, cum_distance, cur_cost, diag_cost):
+    def find_best_step(self, cum_distance, cur_cost, diag_cost,alpha=1.0):
         '''
-        The function computes the local DTW step, adjusting for the diagonal penalty.        
+        The function computes the local DTW step, adjusting for the diagonal penalty.
+        We can also have either cumulative distance (alpha = 1) or EWMA distance (alpha < 1).        
         It returns the optimal distance and the optimal step.
         '''                
-        alpha = 0.94
-#         d = np.array([cur_cost + self.get(0, cum_distance), 
-#                       cur_cost + self.get(1, cum_distance), 
-#                       diag_cost*cur_cost + self.get(2, cum_distance)])            
+            
         d = np.array([cur_cost + alpha*self.get(0, cum_distance), 
                       cur_cost + alpha*self.get(1, cum_distance), 
                       diag_cost*cur_cost + alpha*self.get(2, cum_distance)])
@@ -60,10 +58,6 @@ class CellList():
             return(idx_act-1, idx_est-1)
         else:
             raise(ValueError('Step not valid'))        
-        
-#     def __repr__(self):
-#         return(np.array([np.array(self.rows).T, np.array(self.cols).T]).__repr__())   
-# 
 
 class Matcher():
     '''
@@ -76,10 +70,11 @@ class Matcher():
     '''
     def __init__(self, wd, filename, sr, hop_length,                  
                  diag_cost=1.20,
-                 compute_chromagram_fcn = lb.feature.chroma_stft, # Change to use CQT                
-                 compute_chromagram_fcn_kwargs = {}, 
-                 chromagram_mode = 0,
-                 chromagram_act = None,
+                 alpha=0.94, # DTW memory
+                 compute_chromagram_fcn=lb.feature.chroma_stft, # Change to use CQT                
+                 compute_chromagram_fcn_kwargs={}, 
+                 chromagram_mode=0,
+                 chromagram_act=None,
                  use_low_memory=True): 
         
         # Start by fixing the sample rate and hop size for the spectrum
@@ -110,15 +105,19 @@ class Matcher():
         
         # Initialise position and position_sec and position_tick.  
         # They represent the expected position in the Midi file.
+        # The best distance is the total alignment distance (cum or EWMA)
+        # We have:  best_distance = [x[-1] for x in best_paths_distance] 
         self.position = 0
-        self.positions = [0]
-        self.positions_sec = [0]
+        self.positions = []
+        self.positions_sec = []
         self.position_tick = 0
+        self.best_distance = []
         
         # DTW parameters
         self.search_width = 100 # width of the band to search the optimal alignment (in frames)
         self.min_data = 20 # min number of input frames to compute before doing anything        
-        self.diag_cost = diag_cost # the cost for the diagonal (1.0<=x<=2.0, may be set to less than 2 to let the algorithm favour diagonal moves) 
+        self.diag_cost = diag_cost # the cost for the diagonal (1.0<=x<=2.0, may be set to less than 2 to let the algorithm favour diagonal moves)
+        self.alpha = alpha # Alpha enable to either use cumulative distance (alpha = 1) or EWMA distance (alpha < 1). 
         
         # Boolean to check if the new input has been processed
         self.input_advanced = False
@@ -139,7 +138,7 @@ class Matcher():
         self.best_paths_distance = []
         
         # Check if we need to store the best paths
-        self.use_low_memory = use_low_memory       
+        self.use_low_memory = use_low_memory            
         
     def set_chromagram(self, wd, filename, chromagram_act=None):
         '''
@@ -310,7 +309,10 @@ class Matcher():
             for k in np.arange(max(idx_est-self.search_width+1, 0), idx_est+1):                
                 curr_cost = utils.distance_chroma(self.chromagram_act[idx_act, :], self.chromagram_est[k, :])                
                 cells = self.find_cells(idx_act, k)                                                                 
-                (self.cum_distance[idx_act, k], self.steps[idx_act, k]) = cells.find_best_step(self.cum_distance, curr_cost, self.diag_cost)
+                (self.cum_distance[idx_act, k], self.steps[idx_act, k]) = cells.find_best_step(self.cum_distance, 
+                                                                                               curr_cost, 
+                                                                                               self.diag_cost,
+                                                                                               alpha=self.alpha)
                 
             return
             
@@ -326,7 +328,10 @@ class Matcher():
             for k in np.arange(min_idx_act, max_idx_act):                
                 curr_cost = utils.distance_chroma(self.chromagram_act[k, :], self.chromagram_est[idx_est, :])
                 cells = self.find_cells(k, idx_est)
-                (self.cum_distance[k, idx_est], self.steps[k, idx_est]) = cells.find_best_step(self.cum_distance, curr_cost, self.diag_cost)                
+                (self.cum_distance[k, idx_est], self.steps[k, idx_est]) = cells.find_best_step(self.cum_distance, 
+                                                                                               curr_cost, 
+                                                                                               self.diag_cost,
+                                                                                               alpha=self.alpha)                
             return
 
     def update_best_path(self, max_backtrack=np.inf):
@@ -372,10 +377,18 @@ class Matcher():
         self.position = np.nanargmin(self.cum_distance[:,self.idx_est])
         self.positions.append(self.position) 
         self.positions_sec.append(self.position * self.hop_length_act / float(self.sr_act))
+        self.best_distance.append(self.cum_distance[self.position, self.idx_est])
         
         # Only possible if the input file was a '.mid' in the first place
         if self.file_extension == '.mid':
             self.position_tick = self.midi_obj.time_to_tick(self.positions_sec[-1])
+            
+    def filter_position(self):
+        
+        # 
+        
+        self.positions
+
         
     def plot_dtw_distance(self, paths=[-1]):
         '''
@@ -424,7 +437,7 @@ class Matcher():
             
         # Get the alignment output
         # Not sure whether we should add/take out one frame... Also, we should use matcher_tmp.sr_est once possible
-        times_cor_est = np.arange(nb_frames_est+1) * self.hop_length_act / float(self.sr_act) 
+        times_cor_est = np.arange(nb_frames_est) * self.hop_length_act / float(self.sr_act) 
         times_ori_est = np.array(self.positions_sec)
         
         return(times_cor_est, times_ori_est)
@@ -458,22 +471,16 @@ class Matcher():
         # Store the new chromagram
         self.chromagram_est[self.idx_est+1, :] = chromagram_est_row
                                     
-        self.input_advanced = False
-        # Run the main loop
-        while not self.input_advanced:
-            
-#             # Disable the matching procedure if we are at the end of the act data
-#             # In that case, we keep updating the best path (keeping idx_act to the last act value)
-#             if self.idx_act >= self.len_chromagram_act - 1:
-#                 self.idx_est += 1 # Increment the estimated position nonetheless
-#                 self.update_position()
-#                 return
-                     
+        # Run the main loop until the input has been advanced
+        self.input_advanced = False        
+        while not self.input_advanced:                     
             direction = self.select_advance_direction()
             self.update_cum_distance(direction)        
                     
         # Update the estimated current position
-        self.update_position()  
+        self.update_position()
+        
+        self.filter_position() # REMOVE
         
         # Find the best path, if need be    
         if not self.use_low_memory:                
