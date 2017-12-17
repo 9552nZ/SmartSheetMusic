@@ -90,7 +90,7 @@ class MatcherEvaluator():
             self.times_rests.append(rests)
             
             # Perform the offline alignment and append the results
-            [times_cor_est, times_ori_est] = matcher_tmp.match_batch(audio_data_est)
+            [times_cor_est, times_ori_est] = matcher_tmp.match_batch_online(audio_data_est)
             self.times_est_all.append(np.array([times_cor_est, times_ori_est]).T)
             
             # Keep the matchers (for reporting only, may be removed at a later stage)
@@ -128,8 +128,20 @@ class MatcherEvaluator():
                 } 
              
             self.alignement_stats.append(alignement_stats)
-            
-    def plot_alignment_error(self):
+    
+    def plot_alignment_error(self, idx_matcher):
+        '''
+        Plot the alignment error for one the corruption config.
+        '''
+        
+        utils.plot_alignment(self.times_est_all[idx_matcher][:,0], 
+                             self.times_est_all[idx_matcher][:,1], 
+                             self.times_cor_act_all[idx_matcher], 
+                             self.times_ori_act,
+                             times_ori_est_filtered=self.matchers[idx_matcher].positions_sec_filtered)
+        
+                    
+    def plot_alignment_error_multi(self):
         '''
         Plot the alignment error for all the corruption configs.
         '''

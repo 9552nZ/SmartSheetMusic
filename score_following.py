@@ -57,9 +57,9 @@ class CellList():
         elif step == 2:
             return(idx_act-1, idx_est-1)
         else:
-            raise(ValueError('Step not valid'))        
-
-class Matcher():
+            raise(ValueError('Step not valid'))
+        
+class OnlineDTW():
     '''
     Implementation of the online DTW matcher as per S. Dixon.
     Resources:
@@ -68,37 +68,19 @@ class Matcher():
     http://www.cp.jku.at/research/papers/Arzt_Masterarbeit_2007.pdf
     https://code.soundsoftware.ac.uk/projects/match/repository/entry/at/ofai/music/match/Finder.java
     '''
-    def __init__(self, wd, filename, sr, hop_length,                  
-                 diag_cost=1.20,
-                 alpha=1.0, # DTW memory
-                 smoothing_parameter=0.9,
-                 compute_chromagram_fcn=lb.feature.chroma_stft, # Change to use CQT                
-                 compute_chromagram_fcn_kwargs={'tuning':0.0}, 
-                 chromagram_mode=0,
-                 chromagram_act=None,
-                 use_low_memory=True): 
+    def __init__(self, 
+                 features_act,
+                 distance_fcn=utils.distance_chroma, 
+                 diag_cost=1.2, 
+                 alpha=1.0, 
+                 smoothing_parameter=1.0,
+                 light_run=True):
         
-        # Start by fixing the sample rate and hop size for the spectrum
-        # decomposition
-        self.sr_act = sr
-        self.hop_length_act = hop_length   
         
-        # Set the function used to compute the chromagram and its parameters
-        self.compute_chromagram_fcn = compute_chromagram_fcn
-        self.compute_chromagram_fcn_kwargs = compute_chromagram_fcn_kwargs
-        self.chromagram_mode = chromagram_mode
+        self.features_act = features_act 
+        self.nb_obs_feature_act = features_act.shape[0]
+        self.nb_bin_feature = features_act.shape[1]
         
-        # Check if we need to store the chromagram to disk and retrieve it when it exists
-        self.store_chromagram = False  
-        
-        # Check whether we have the '.mid' or '.wav' as input.
-        _, self.file_extension = os.path.splitext(filename)        
-        if not (self.file_extension == '.mid' or self.file_extension == '.wav'):
-            raise ValueError('Input file need to be either .mid or .wav')
-        
-        # Load the .wav file and turn into chromagram.
-        self.set_chromagram(wd, filename, chromagram_act=chromagram_act)
-                
         # Current position in the act / est data.
         # Set to -1 as no data has been processed.
         self.idx_act = -1
@@ -110,120 +92,35 @@ class Matcher():
         # We have:  best_distance = [x[-1] for x in best_paths_distance] 
         self.position = 0
         self.positions = []
-        self.positions_sec = []
-        self.position_tick = 0
-        self.best_distance = []
         
+        # Distance function
+        self.distance_fcn = distance_fcn
+
         # DTW parameters
         self.search_width = 100 # width of the band to search the optimal alignment (in frames)
         self.min_data = 20 # min number of input frames to compute before doing anything        
         self.diag_cost = diag_cost # the cost for the diagonal (1.0<=x<=2.0, may be set to less than 2 to let the algorithm favour diagonal moves)
         self.alpha = alpha # Alpha enable to either use cumulative distance (alpha = 1) or EWMA distance (alpha < 1).
-        self.smoothing_parameter = smoothing_parameter  
-        
+        self.smoothing_parameter = smoothing_parameter          
+                
         # Boolean to check if the new input has been processed
         self.input_advanced = False
         
-        # Initialise large empty matrices for chromagram_est and for the cumulative distance matrix
-        self.chromagram_est = np.zeros((max(self.len_chromagram_act*2, 2000), self.nb_feature_chromagram))
-        self.chromagram_est.fill(np.nan)
-        self.cum_distance = np.zeros((self.chromagram_act.shape[0], self.chromagram_est.shape[0]), dtype='float16')
+        # Initialise large empty matrices for features_est and for the cumulative distance matrix
+        self.features_est = np.zeros((max(self.nb_obs_feature_act*2, 2000), self.nb_bin_feature))
+        self.features_est.fill(np.nan)
+        self.cum_distance = np.zeros((self.nb_obs_feature_act, self.features_est.shape[0]), dtype='float16')
         self.cum_distance.fill(np.nan)
         
         # Initialise large empty matrices for the steps
-        self.steps = np.zeros((self.chromagram_act.shape[0], self.chromagram_est.shape[0]), dtype='int16')
+        self.steps = np.zeros((self.nb_obs_feature_act, self.features_est.shape[0]), dtype='int16')
         self.steps.fill(np.iinfo(np.int16).min)
-                
+        
         # Initialise the best_paths, in order to keep the best path at each iteration
         # (one iteration correspond to one update of the live feed)
+        self.light_run = light_run # Flag to backtrack or not 
         self.best_paths = []
         self.best_paths_distance = []
-        
-        # Check if we need to store the best paths
-        self.use_low_memory = use_low_memory
-        
-        # Set the random distance threshold, for the position filtering.
-        # Make sure to update if we change the distance. 
-        self.random_distance_threshold = utils.calc_mean_random_distance(self.chromagram_act)
-        self.position_filtered = -1
-        self.positions_filtered = []
-        self.positions_sec_filtered = []
-        self.position_tick_filtered = 0          
-        
-    def set_chromagram(self, wd, filename, chromagram_act=None):
-        '''
-        The function can take as input a 'wav' or a '.mid' file.
-        in the latter case, we have to generate the corresponding '.wav'.  
-                
-        Get the chromagram from the disk or process the '.wav' file and write 
-        the chromagram to disk if need be.
-        '''
-        
-        # Build a specific key for the chromagram in case we want to store.
-        suffix_filename = "_chromagram_S{}_H{}_fcn{}_mode{}_.npy".format(self.sr_act, 
-                                                                         self.hop_length_act,
-                                                                         self.compute_chromagram_fcn.__name__, 
-                                                                         self.chromagram_mode)                                                                                                                                                                                                             
-        
-        filename_chomagram = wd + utils.unmake_file_format(filename, self.file_extension) + suffix_filename
-        
-        # We first check if a chromagram has been passed as input,
-        # second, we check if the chromagram exists on disk, otherwise we generate it.
-        if chromagram_act is not None:
-            self.chromagram_act = chromagram_act         
-        elif os.path.isfile(filename_chomagram) and self.store_chromagram:
-            self.chromagram_act = np.load(filename_chomagram)
-        else:
-            # If the input file is a '.mid', we have to generate the '.wav'
-            # Also, store the midi object, it will be useful to get the position in ticks
-            if self.file_extension == '.mid':
-                self.midi_obj = pretty_midi.PrettyMIDI(wd + filename)#filename_mid = filename                
-                filename = utils.change_file_format(filename, '.mid', '.wav')                
-                utils.write_wav(wd + filename, 
-                                self.midi_obj.fluidsynth(self.sr_act, start_new_process32=utils.fluidsynth_start_new_process32()), 
-                                rate = self.sr_act)
-            
-            # Now we are sure to have a '.wav', we can retrieve it.
-            audio_data_wav = lb.core.load(wd + utils.make_file_format(filename, '.wav'), sr = self.sr_act)
-            
-            # Turn into chromagram
-            self.chromagram_act = self.compute_chromagram(audio_data_wav[0])
-            
-            # Store if need be.                                                                                                                                                                                         
-            if self.store_chromagram:                                                 
-                np.save(filename_chomagram, self.chromagram_act)            
-        
-
-        self.len_chromagram_act_sec = self.chromagram_act.shape[0] * self.hop_length_act / float(self.sr_act)
-        self.len_chromagram_act = self.chromagram_act.shape[0]
-        self.nb_feature_chromagram = self.chromagram_act.shape[1]
-        
-    def compute_chromagram(self, y):
-        '''
-        Wrapper function to compute the chromagram.
-        mode = 0: Return the raw chromagram
-        mode = 1: Return the d_chromagram, i.e. the positive (time) difference
-        mode = 2: Return [chromagram, d_chromagram] 
-        '''
-        
-        if not (self.chromagram_mode==0 or self.chromagram_mode==1 or self.chromagram_mode==2): 
-            raise ValueError('Mode needs to be in {0, 1, 2}')
-
-        chromagram = self.compute_chromagram_fcn(y=np.array(y),
-                                                 sr=self.sr_act,
-                                                 hop_length=self.hop_length_act,
-                                                 tuning=0.0,
-                                                 **self.compute_chromagram_fcn_kwargs).T
-                                            
-        if self.chromagram_mode == 0:
-            return(chromagram)
-        else:
-            d_chromagram = np.diff(chromagram, axis=0)
-            d_chromagram = np.maximum(d_chromagram, 0.0)
-            if self.chromagram_mode == 1:
-                return(d_chromagram)
-            else:
-                return(np.hstack((chromagram[1:,:], d_chromagram)))        
         
     def select_advance_direction(self):        
         
@@ -233,7 +130,7 @@ class Matcher():
         if idx_est < self.min_data or idx_act < self.min_data:
             return(0)  
         
-        if idx_act >= self.len_chromagram_act - 1:
+        if idx_act >= self.nb_obs_feature_act - 1:
             return(2)        
         
         # Check if the minimum distance is in the last row or in the last column
@@ -253,8 +150,7 @@ class Matcher():
         '''
         The function identifies the cells that should be evaluated.
         Refer to Figure 2 of http://eecs.qmul.ac.uk/~simond/pub/2005/dafx05.pdf
-        for detail on the possible cases.        
-          
+        for detail on the possible cases.                  
         '''
          
         if i-1 < 0:
@@ -298,8 +194,8 @@ class Matcher():
         if self.idx_act == -1 and self.idx_est == -1:
             self.idx_act += 1
             self.idx_est += 1
-            self.cum_distance[self.idx_act, self.idx_est] = utils.distance_chroma(self.chromagram_act[self.idx_act, :], 
-                                                                                  self.chromagram_est[self.idx_est, :])
+            self.cum_distance[self.idx_act, self.idx_est] = self.distance_fcn(self.features_act[self.idx_act, :], 
+                                                                                  self.features_est[self.idx_est, :])
             self.input_advanced = True            
             return                        
         
@@ -317,7 +213,7 @@ class Matcher():
             idx_est = self.idx_est
             
             for k in np.arange(max(idx_est-self.search_width+1, 0), idx_est+1):                
-                curr_cost = utils.distance_chroma(self.chromagram_act[idx_act, :], self.chromagram_est[k, :])                
+                curr_cost = self.distance_fcn(self.features_act[idx_act, :], self.features_est[k, :])                
                 cells = self.find_cells(idx_act, k)                                                                 
                 (self.cum_distance[idx_act, k], self.steps[idx_act, k]) = cells.find_best_step(self.cum_distance, 
                                                                                                curr_cost, 
@@ -334,9 +230,9 @@ class Matcher():
             idx_est = self.idx_est
 
             min_idx_act = max(idx_act-int(ceil(self.search_width/2.0))+1, 0)
-            max_idx_act = min(idx_act+int(ceil(self.search_width/2.0))+1, self.len_chromagram_act)
+            max_idx_act = min(idx_act+int(ceil(self.search_width/2.0))+1, self.nb_obs_feature_act)
             for k in np.arange(min_idx_act, max_idx_act):                
-                curr_cost = utils.distance_chroma(self.chromagram_act[k, :], self.chromagram_est[idx_est, :])
+                curr_cost = self.distance_fcn(self.features_act[k, :], self.features_est[idx_est, :])
                 cells = self.find_cells(k, idx_est)
                 (self.cum_distance[k, idx_est], self.steps[k, idx_est]) = cells.find_best_step(self.cum_distance, 
                                                                                                curr_cost, 
@@ -387,15 +283,194 @@ class Matcher():
 #         adj_distance = self.cum_distance[:,self.idx_est] / np.arange(1,self.cum_distance.shape[0]+1)
 #         self.position = np.nanargmin(adj_distance)
 #         self.position = np.nanargmin(self.cum_distance[:,self.idx_est])
-        self.positions.append(self.position) 
-        self.positions_sec.append(self.position * self.hop_length_act / float(self.sr_act))
-        self.best_distance.append(self.cum_distance[self.position, self.idx_est])
+        self.positions.append(self.position)  
         
-        # Only possible if the input file was a '.mid' in the first place
-        if self.file_extension == '.mid':
-            self.position_tick = self.midi_obj.time_to_tick(self.positions_sec[-1])
+    def plot_dtw_distance(self, paths=[-1]):
+        '''
+        Plot the cumulative distance matrix as a heat map and the best path.
+        
+        path_nb is the number of the path we want to plot (-1 for the final path). 
+        '''
+        utils.plot_dtw_distance(self.cum_distance)
+
+        for k in paths:
+            plt.plot(self.best_paths[k].cols, self.best_paths[k].rows, color='black')                                              
+
+    def main_dtw(self, features_est_new): 
+        '''
+        Called for every new frame of the live feed, for which we run the online DTW
+        '''
+        
+        # Store the new features
+        self.features_est[self.idx_est+1, :] = features_est_new
+                                    
+        # Run the main loop until the input has been advanced
+        self.input_advanced = False        
+        while not self.input_advanced:                     
+            direction = self.select_advance_direction()
+            self.update_cum_distance(direction)        
                     
+        # Update the estimated current position
+        self.update_position()    
+        
+        # Find the best path, if need be    
+        if not self.light_run:                
+            self.update_best_path(10)            
+
+class Matcher():
+    '''
+    Top-level class for the score following procedure. 
+    This class serves as a wrapper around the online DTW.
+    '''
+    def __init__(self, wd, filename, sr, hop_length,                  
+                 dtw_kwargs = {}, 
+                 compute_chromagram_fcn=lb.feature.chroma_stft,                
+                 compute_chromagram_fcn_kwargs={'tuning':0.0}, 
+                 chromagram_mode=0,
+                 chromagram_act=None):
+                         
+        
+        # Start by fixing the sample rate and hop size for the spectrum
+        # decomposition
+        self.sr = sr
+        self.hop_length = hop_length  
+        
+        # Initialise the placeholder for the estimated audio data (only the most recent)
+        # This is required in the online mode, as we may want to compute the chromagram  
+        # with more data that just the last chunk.
+        self.audio_data = np.array([])         
+        self.min_len_sample = utils.calc_nb_sample_stft(self.sr, self.hop_length, 3.0) # Nb of samples to compute the chromagram 
+        
+        # Set the function used to compute the chromagram and its parameters
+        self.compute_chromagram_fcn = compute_chromagram_fcn
+        self.compute_chromagram_fcn_kwargs = compute_chromagram_fcn_kwargs
+        self.chromagram_mode = chromagram_mode
+        
+        # Check if we need to store the chromagram to disk and retrieve it when it exists
+        self.store_chromagram = False  
+        
+        # Check whether we have the '.mid' or '.wav' as input.
+        _, self.file_extension = os.path.splitext(filename)        
+        if not (self.file_extension == '.mid' or self.file_extension == '.wav'):
+            raise ValueError('Input file need to be either .mid or .wav')
+        
+        # Load the .wav file and turn into chromagram.
+        if chromagram_act is None:
+            chromagram_act = self.get_chromagram(wd, filename)  
+
+        self.positions_sec = []
+        self.position_tick = 0
+        self.best_distance = []        
+        
+        # Set the random distance threshold, for the position filtering.
+        # Make sure to update if we change the distance. 
+        self.random_distance_threshold = utils.calc_mean_random_distance(chromagram_act)
+        self.position_filtered = -1
+        self.positions_filtered = []
+        self.positions_sec_filtered = []
+        self.position_tick_filtered = 0          
+        
+        # Finally, initialise the DTW engine
+        self.dtw = OnlineDTW(chromagram_act, **dtw_kwargs)            
+        
+    def get_chromagram(self, wd, filename):
+        '''
+        The function can take as input a 'wav' or a '.mid' file.
+        in the latter case, we have to generate the corresponding '.wav'.  
+                
+        Get the chromagram from the disk or process the '.wav' file and write 
+        the chromagram to disk if need be.
+        '''
+        
+        # Build a specific key for the chromagram in case we want to store.
+        suffix_filename = "_chromagram_S{}_H{}_fcn{}_mode{}_.npy".format(self.sr, 
+                                                                         self.hop_length,
+                                                                         self.compute_chromagram_fcn.__name__, 
+                                                                         self.chromagram_mode)                                                                                                                                                                                                             
+        
+        filename_chomagram = wd + utils.unmake_file_format(filename, self.file_extension) + suffix_filename
+        
+
+        # We check if the chromagram exists on disk, otherwise we generate it.         
+        if os.path.isfile(filename_chomagram) and self.store_chromagram:
+            chromagram_act = np.load(filename_chomagram)
+        else:
+            # If the input file is a '.mid', we have to generate the '.wav'
+            # Also, store the midi object, it will be useful to get the position in ticks
+            if self.file_extension == '.mid':
+                self.midi_obj = pretty_midi.PrettyMIDI(wd + filename)#filename_mid = filename                
+                filename = utils.change_file_format(filename, '.mid', '.wav')                
+                utils.write_wav(wd + filename, 
+                                self.midi_obj.fluidsynth(self.sr, start_new_process32=utils.fluidsynth_start_new_process32()), 
+                                rate = self.sr)
+            
+            # Now we are sure to have a '.wav', we can retrieve it.
+            audio_data_wav = lb.core.load(wd + utils.make_file_format(filename, '.wav'), sr = self.sr)
+            
+            # Turn into chromagram
+            chromagram_act = self.compute_chromagram(audio_data_wav[0])
+            
+            # Store if need be.                                                                                                                                                                                         
+            if self.store_chromagram:                                                 
+                np.save(filename_chomagram, self.chromagram_act)            
+
+        return(chromagram_act)
+        
+    def compute_chromagram(self, y):
+        '''
+        Wrapper function to compute the chromagram.
+        mode = 0: Return the raw chromagram
+        mode = 1: Return the d_chromagram, i.e. the positive (time) difference
+        mode = 2: Return [chromagram, d_chromagram] 
+        '''
+        
+        if not (self.chromagram_mode==0 or self.chromagram_mode==1 or self.chromagram_mode==2): 
+            raise ValueError('Mode needs to be in {0, 1, 2}')
+
+        chromagram = self.compute_chromagram_fcn(y=np.array(y),
+                                                 sr=self.sr,
+                                                 hop_length=self.hop_length,
+                                                 tuning=0.0,
+                                                 **self.compute_chromagram_fcn_kwargs).T
+                                            
+        if self.chromagram_mode == 0:
+            return(chromagram)
+        else:
+            d_chromagram = np.diff(chromagram, axis=0)
+            d_chromagram = np.maximum(d_chromagram, 0.0)
+            if self.chromagram_mode == 1:
+                return(d_chromagram)
+            else:
+                return(np.hstack((chromagram[1:,:], d_chromagram)))
+            
+    
+    def update_audio_data(self, new_audio_data):
+        '''
+        Update the buffer of audio data. We use this buffer to compute the live chromagram.
+        '''
+        
+        # Check that we pass in the right type of data
+        if new_audio_data.dtype is not np.dtype(utils.AUDIO_FORMAT_MAP[utils.AUDIO_FORMAT_DEFAULT][0]):
+            raise(TypeError('Input audio data need to be {}!'.format(utils.AUDIO_FORMAT_DEFAULT)))
+        
+        
+        # Make sure that the chunk size is a multiple of hop size
+        if (len(new_audio_data) % self.hop_length) != 0:
+            raise ValueError('Chunk size need to be a multiple of hop size')
+        
+        # Append the new data
+        self.audio_data = np.append(self.audio_data, new_audio_data)
+        
+        # Trim. There are two possible cases:
+        # - we added a lot of data , i.e. len(new_audio_data) > self.min_len_sample: we want to keep all the new added data
+        # - we added a an online chunk of data , i.e. len(new_audio_data) < self.min_len_sample: in this case, we only keep 
+        # the most recent samples. 
+        self.audio_data = self.audio_data[max(len(self.audio_data) - max(self.min_len_sample, len(new_audio_data)), 0):len(self.audio_data)]                        
+        
     def filter_position(self):
+        '''
+        TODO :  ADD COMMENTS AND FIX
+        '''
         
         nb_frames_ma_distance = 3
         nb_frames_speed = 10
@@ -417,22 +492,12 @@ class Matcher():
              
         self.position_filtered = position_posterior
         self.positions_filtered.append(position_posterior)
-        self.positions_sec_filtered.append(position_posterior * self.hop_length_act / float(self.sr_act))
+        self.positions_sec_filtered.append(position_posterior * self.hop_length / float(self.sr))
         
         # Only possible if the input file was a '.mid' in the first place
         if self.file_extension == '.mid':
             self.position_tick_filtered = self.midi_obj.time_to_tick(self.positions_sec_filtered[-1])
-        
-    def plot_dtw_distance(self, paths=[-1]):
-        '''
-        Plot the cumulative distance matrix as a heat map and the best path.
-        
-        path_nb is the number of the path we want to plot (-1 for the final path). 
-        '''
-        utils.plot_dtw_distance(self.cum_distance)
-
-        for k in paths:
-            plt.plot(self.best_paths[k].cols, self.best_paths[k].rows, color='black')
+            
             
     def plot_chromagrams(self):
         """
@@ -442,40 +507,34 @@ class Matcher():
         axarr = plt.subplots(2, 1)[1]
         
         # Plot chromagram_act
-        utils.plot_chromagram(self.chromagram_act, sr=self.sr_act, hop_length=self.hop_length_act, ax=axarr[0], xticks_sec=True)
+        utils.plot_chromagram(self.chromagram_act, sr=self.sr, hop_length=self.hop_length, ax=axarr[0], xticks_sec=True)
         axarr[0].set_title('Chromagram act')
         
         # Plot chromagram_est (up to idx_est). Will need to amend to sr_est and hop_length_est at some point...
-        utils.plot_chromagram(self.chromagram_est[0:self.idx_est,:], sr=self.sr_act, hop_length=self.hop_length_act, ax=axarr[1], xticks_sec=True)
-        axarr[1].set_title('Chromagram est')   
+        utils.plot_chromagram(self.chromagram_est[0:self.idx_est,:], sr=self.sr, hop_length=self.hop_length, ax=axarr[1], xticks_sec=True)
+        axarr[1].set_title('Chromagram est')  
+           
         
-    def match_batch(self, audio_data_est):
+    def match_batch_online(self, audio_data_est):
         '''
         Align a target raw audio.
         The raw audio needs to be sampled as per the matcher's sample rate.
         Though the process is offline because we pass in the entire audio set, the 
         actual alignment does not use any forward-looking data.
-        
+         
         Return a mapping between the times of the target audio vs times of the "true" audio.  
         '''
         
-        # Compute the chromagram, use the engine of the matcher to ensure that both chromagrams have 
-        # been computed with the same procedure.            
-        chromagram_est = self.compute_chromagram(audio_data_est)                                                                    
-         
-        # Run the online alignment, frame by frame
-        nb_frames_est = chromagram_est.shape[0]
-        for n in range(nb_frames_est):
-            self.main_matcher(chromagram_est[n,:])
-            
+        self.match_online(audio_data_est)
+        
         # Get the alignment output
         # Not sure whether we should add/take out one frame... Also, we should use matcher_tmp.sr_est once possible
-        times_cor_est = np.arange(nb_frames_est) * self.hop_length_act / float(self.sr_act) 
+        times_cor_est = np.arange(len(self.positions_sec)) * self.hop_length / float(self.sr) 
         times_ori_est = np.array(self.positions_sec)
-        
+         
         return(times_cor_est, times_ori_est)
     
-    def match_offline(self, audio_data_est):
+    def match_batch_offline(self, audio_data_est):
         '''
         Use the librosa DTW implementation to perform offline matching.
         '''
@@ -485,37 +544,40 @@ class Matcher():
         chromagram_est = self.compute_chromagram(audio_data_est)
         
         # Set up the diagonal cost        
-        weights_mul = np.array([1.0*self.diag_cost, 1.0, 1.0])   
+        weights_mul = np.array([1.0*self.dtw.diag_cost, 1.0, 1.0])   
         
         # Run the DTW alignment
-        [cum_distance, best_path] = lb.core.dtw(self.chromagram_act.T, chromagram_est.T, weights_mul=weights_mul)
+        [cum_distance, best_path] = lb.core.dtw(self.dtw.features_act.T, chromagram_est.T, weights_mul=weights_mul)
         
         # Get the alignment output, reverse the order of the paths
-        times_ori_est = np.flip(best_path[:,0], 0) * self.hop_length_act / float(self.sr_act)         
-        times_cor_est = np.flip(best_path[:,1], 0) * self.hop_length_act / float(self.sr_act)
+        times_ori_est = np.flip(best_path[:,0], 0) * self.hop_length / float(self.sr)         
+        times_cor_est = np.flip(best_path[:,1], 0) * self.hop_length / float(self.sr)
                             
-        return(times_cor_est, times_ori_est, {'cum_distance':cum_distance, 'best_path':best_path})                                
+        return(times_cor_est, times_ori_est, {'cum_distance':cum_distance, 'best_path':best_path}) 
+                                        
                                                         
-    def main_matcher(self, chromagram_est_row): 
+    def match_online(self, new_audio_data_est):
         '''
-        Called for every new frame of the live feed, for which we run the online DTW
+        Run the online matching procedure for a chunk of audio data.
         '''
         
-        # Store the new chromagram
-        self.chromagram_est[self.idx_est+1, :] = chromagram_est_row
-                                    
-        # Run the main loop until the input has been advanced
-        self.input_advanced = False        
-        while not self.input_advanced:                     
-            direction = self.select_advance_direction()
-            self.update_cum_distance(direction)        
-                    
-        # Update the estimated current position
-        self.update_position()
+        # Add the new data to the buffer
+        self.update_audio_data(new_audio_data_est)
         
-        self.filter_position() # REMOVE
+        # Compute the chromagram for the entire buffer. 
+        # This is not computationally optimal, (since len(new_audio_data_est) << len(self.audio_data))
+        # but it is safer. We may need to reduce the buffer size if this computation is too expensive.       
+        chromagram_est = self.compute_chromagram(self.audio_data)                                                               
         
-        # Find the best path, if need be    
-        if not self.use_low_memory:                
-            self.update_best_path(10)
-         
+        # Only run the matching over the last (len(new_audio_data)/self.hop_length) segments of the chromagram        
+        idx_frames = np.arange(chromagram_est.shape[0] - len(new_audio_data_est) / self.hop_length, chromagram_est.shape[0])
+        
+        # Run the online matching procedure, one frame at a time
+        for n in idx_frames:
+            self.dtw.main_dtw(chromagram_est[n,:])
+            
+            self.positions_sec.append(self.dtw.position * self.hop_length / float(self.sr))
+            
+            # Only possible if the input file was a '.mid' in the first place
+            if self.file_extension == '.mid':
+                self.position_tick = self.midi_obj.time_to_tick(self.positions_sec[-1])   
