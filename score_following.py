@@ -70,9 +70,10 @@ class Matcher():
     '''
     def __init__(self, wd, filename, sr, hop_length,                  
                  diag_cost=1.20,
-                 alpha=0.94, # DTW memory
+                 alpha=1.0, # DTW memory
+                 smoothing_parameter=0.9,
                  compute_chromagram_fcn=lb.feature.chroma_stft, # Change to use CQT                
-                 compute_chromagram_fcn_kwargs={}, 
+                 compute_chromagram_fcn_kwargs={'tuning':0.0}, 
                  chromagram_mode=0,
                  chromagram_act=None,
                  use_low_memory=True): 
@@ -117,7 +118,8 @@ class Matcher():
         self.search_width = 100 # width of the band to search the optimal alignment (in frames)
         self.min_data = 20 # min number of input frames to compute before doing anything        
         self.diag_cost = diag_cost # the cost for the diagonal (1.0<=x<=2.0, may be set to less than 2 to let the algorithm favour diagonal moves)
-        self.alpha = alpha # Alpha enable to either use cumulative distance (alpha = 1) or EWMA distance (alpha < 1). 
+        self.alpha = alpha # Alpha enable to either use cumulative distance (alpha = 1) or EWMA distance (alpha < 1).
+        self.smoothing_parameter = smoothing_parameter  
         
         # Boolean to check if the new input has been processed
         self.input_advanced = False
@@ -138,7 +140,15 @@ class Matcher():
         self.best_paths_distance = []
         
         # Check if we need to store the best paths
-        self.use_low_memory = use_low_memory            
+        self.use_low_memory = use_low_memory
+        
+        # Set the random distance threshold, for the position filtering.
+        # Make sure to update if we change the distance. 
+        self.random_distance_threshold = utils.calc_mean_random_distance(self.chromagram_act)
+        self.position_filtered = -1
+        self.positions_filtered = []
+        self.positions_sec_filtered = []
+        self.position_tick_filtered = 0          
         
     def set_chromagram(self, wd, filename, chromagram_act=None):
         '''
@@ -372,9 +382,11 @@ class Matcher():
         In the case we have the midi_object available, also report the position in ticks
         '''
         
-#         self.position.append(self.idx_act) # RESTORE, MAYBE.... 
+        self.position = self.idx_act # RESTORE, MAYBE.... 
 #         self.position.append(np.nanargmin(self.cum_distance[0:self.idx_act+1,self.idx_est]))
-        self.position = np.nanargmin(self.cum_distance[:,self.idx_est])
+#         adj_distance = self.cum_distance[:,self.idx_est] / np.arange(1,self.cum_distance.shape[0]+1)
+#         self.position = np.nanargmin(adj_distance)
+#         self.position = np.nanargmin(self.cum_distance[:,self.idx_est])
         self.positions.append(self.position) 
         self.positions_sec.append(self.position * self.hop_length_act / float(self.sr_act))
         self.best_distance.append(self.cum_distance[self.position, self.idx_est])
@@ -382,13 +394,34 @@ class Matcher():
         # Only possible if the input file was a '.mid' in the first place
         if self.file_extension == '.mid':
             self.position_tick = self.midi_obj.time_to_tick(self.positions_sec[-1])
-            
+                    
     def filter_position(self):
         
-        # 
+        nb_frames_ma_distance = 3
+        nb_frames_speed = 10
         
-        self.positions
-
+        cum_distance = np.concatenate((np.array([0.0]), np.array(self.best_distance)))
+        delta_distance = cum_distance[1:]-self.alpha*cum_distance[0:-1]
+        mean_delta_distance = np.mean(delta_distance[max(self.idx_est-nb_frames_ma_distance+1, 0):self.idx_est+1])
+                
+        bad_alignment = mean_delta_distance > 0.8*self.random_distance_threshold        
+                            
+        if bad_alignment:
+            position_posterior = self.position_filtered
+        else:
+            positions = np.concatenate((np.array([-1]), np.array(self.positions)))
+            positions = positions[max(self.idx_est-nb_frames_speed+2, 0):self.idx_est+2] # +2 since we prepended an item
+            speed = np.mean(np.diff(positions))
+            position_prior = self.position_filtered + speed
+            position_posterior = position_prior*self.smoothing_parameter + (1-self.smoothing_parameter)*self.position  
+             
+        self.position_filtered = position_posterior
+        self.positions_filtered.append(position_posterior)
+        self.positions_sec_filtered.append(position_posterior * self.hop_length_act / float(self.sr_act))
+        
+        # Only possible if the input file was a '.mid' in the first place
+        if self.file_extension == '.mid':
+            self.position_tick_filtered = self.midi_obj.time_to_tick(self.positions_sec_filtered[-1])
         
     def plot_dtw_distance(self, paths=[-1]):
         '''
@@ -457,9 +490,9 @@ class Matcher():
         # Run the DTW alignment
         [cum_distance, best_path] = lb.core.dtw(self.chromagram_act.T, chromagram_est.T, weights_mul=weights_mul)
         
-        # Get the alignment output
-        times_ori_est = best_path[:,0] * self.hop_length_act / float(self.sr_act)         
-        times_cor_est = best_path[:,1] * self.hop_length_act / float(self.sr_act)
+        # Get the alignment output, reverse the order of the paths
+        times_ori_est = np.flip(best_path[:,0], 0) * self.hop_length_act / float(self.sr_act)         
+        times_cor_est = np.flip(best_path[:,1], 0) * self.hop_length_act / float(self.sr_act)
                             
         return(times_cor_est, times_ori_est, {'cum_distance':cum_distance, 'best_path':best_path})                                
                                                         

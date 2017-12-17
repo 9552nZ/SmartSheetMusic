@@ -58,10 +58,11 @@ class MatcherManager():
         self.min_len_chromagram_sec = 4.0 # Seconds of audio we want to compute the chromagram
         self.min_len_sample = utils.calc_nb_sample_stft(self.sr, self.hop_length, self.min_len_chromagram_sec) # Nb of samples to compute the chromagram 
      
-        # Initialialise the matcher
-        self.matcher = Matcher(self.wd, self.filename, self.sr, self.hop_length)
+        # Initialise the matcher
+        self.matcher = Matcher(self.wd, self.filename, self.sr, self.hop_length, compute_chromagram_fcn_kwargs={'n_fft':self.hop_length*2, 'n_chroma':12})
      
         # Initialise the music detecter
+        self.music_detection_diagnostic = ''
         if self.detect_music:
             self.music_detecter = MusicDetecter(utils.WD_AUDIOSET + "VerifiedDataset\\VerifiedDatasetRecorded\\", self.sr)
         
@@ -145,8 +146,8 @@ class MatcherManager():
         if self.detect_music:
             audio_data = np.array(self.audio_data)
             audio_data_last = audio_data[len(self.audio_data)-self.music_detecter.mlp.nb_sample:len(self.audio_data)]
-            music_detected = self.music_detecter.detect(audio_data_last)
-                        
+            music_detected, self.music_detection_diagnostic = self.music_detecter.detect(audio_data_last)
+                    
             if music_detected and self.status_matcher == PAUSE:
                 self.status_matcher = MATCH
             elif not music_detected and self.status_matcher == MATCH:
@@ -167,6 +168,7 @@ class MatcherManager():
         # Once we started recording, keep the latest audio data
         self.update_audio_data(new_audio_data)
         
+        # Check the status
         self.update_status_matcher()
         if self.status_matcher == PAUSE:
             return        
@@ -189,7 +191,9 @@ class MatcherManager():
         '''
         Send the current position to the GUI via the socket.
         '''
-        print "Sending current position: {}         Status: {}".format(self.matcher.position_tick, self.status_matcher)
+        root_str = "Sending current position: {}         Status: {}({})"
+        print root_str.format(self.matcher.position_tick, self.status_matcher, self.music_detection_diagnostic)
+                
         self.socket_pub.send(bytes(self.matcher.position_tick))                               
  
     def plot_chromagram(self):
@@ -249,6 +253,7 @@ class MatcherManager():
 #             subprocess.call(['taskkill', '/F', '/T', '/PID', str(self.proc.pid)]) # REMOVE            
             self.reinit()
             self.status = STOP
+            self.music_detection_diagnostic = ''
         else:
             raise(ValueError('Unexpected status ({}) or flag ({})'.format(self.status, flag)))                    
                     

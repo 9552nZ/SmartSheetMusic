@@ -12,7 +12,7 @@ from sklearn.model_selection import train_test_split
 from sklearn.metrics import classification_report
 from sklearn.metrics import confusion_matrix
 from ntpath import basename
-from subprocess import Popen
+# from subprocess import Popen
 from time import sleep
 from shutil import copyfile
 
@@ -102,24 +102,14 @@ def main_record(wd, sr):
     # Read the dataframe with all the samples info
     filename_df_audioset = FILENAME_INFO
     df_audioset = pd.read_pickle(wd + filename_df_audioset)
-    df_audioset_recorded = df_audioset 
-    
-    DETACHED_PROCESS = 0x00000008    
+    df_audioset_recorded = df_audioset     
         
     # Loop over all the samples
     for idx, row in df_audioset.iterrows():
         
         filename_wav_new = wd_recorded + basename(row["filename_wav"])
-        record_length = utils.get_length_wav(row["filename_wav"])
-                                
-        cmd = r'C:\\Program Files\\MPC-HC\\mpc-hc64.exe {}'.format(row["filename_wav"])      
-        p = Popen(cmd,shell=False,stdin=None,stdout=None,stderr=None,close_fds=True,creationflags=DETACHED_PROCESS)
-        
-        utils.record(record_length + 0.1, 
-                     sr=sr, 
-                     audio_format="int16", 
-                     save=True, 
-                     filename_wav_out=filename_wav_new)            
+
+        utils.start_and_record(row["filename_wav"], filename_wav_new, sr=sr)
                 
         df_audioset_recorded.loc[idx, "filename_wav"] = filename_wav_new
         sleep(1.0)        
@@ -451,7 +441,8 @@ def get_config_features(sr, n_fft, hop_length):
         ] 
     
     # Only return the config that works the best
-    config_features = config_features[0:5] 
+#     config_features = config_features[0:5] 
+    config_features = config_features[1:5]
     
     return config_features
 
@@ -464,12 +455,12 @@ def mfcc(y, S, sr, n_fft, hop_length):
     
     return lb.feature.mfcc(sr=sr, S=S_new, n_fft=n_fft, hop_length=hop_length)
 
-def check_is_silence(y):
+def check_is_silence(y, threshold=-50, func=np.max):
     '''
     Check if the input is below the silence threshold
     '''
-    db = 20 * np.log10(np.max(y))
-    is_silence = np.expand_dims(np.array([db < -50], dtype=bool), axis=0)
+    db = 20 * np.log10(func(y))
+    is_silence = np.expand_dims(np.array([db < threshold], dtype=bool), axis=0)
         
     return(is_silence)
 
@@ -495,7 +486,7 @@ def train_model(y, X, hidden_layer_sizes=(100)):
      
     # Split into training and test sets
     # Fix the randomiser seed for now
-    X_train, X_test, y_train, y_test = train_test_split(X, y, random_state=1)  
+    X_train, X_test, y_train, y_test = train_test_split(X, y)  #, random_state=1
      
     # Initialise the MLP, fix the random seed for now
     mlp = MLPClassifier(hidden_layer_sizes=hidden_layer_sizes,max_iter=2000, random_state=1)
@@ -547,28 +538,34 @@ class MusicDetecter():
         return(features)
        
     def detect(self, audio_data):
-         
+        
         if len(audio_data) < self.mlp.nb_sample:
-            return(False)                     
+            music_detected = False 
+            diagnostic = 'Buffer not yet filled'
+
+        elif check_is_silence(audio_data, threshold=-60, func=lambda x: np.mean(np.abs(x))):
+            music_detected = False
+            diagnostic = 'Silence'
         
-        features = self.get_normalised_features(audio_data)
-                
-        # Lastly, we reshape to get a 2D array (with a unique sample).
-        features_flat = features.reshape(1, -1)
-                      
-        prediction = self.mlp.predict(features_flat)[0]
-        
-        # Store the features - REMOVE
-        self.predictions.append(prediction)
-        if self.features is None:            
-            self.features = features_flat  
-            self.audio_data = audio_data         
-        else:
-            self.features = np.vstack((self.features, features_flat))
-            self.audio_data = np.hstack((self.audio_data, audio_data))
-         
-        print prediction 
-        return(True)
+        else:        
+            features = self.get_normalised_features(audio_data)
+                    
+            # We reshape to get a 2D array (with a unique sample).
+            features_flat = features.reshape(1, -1)
+                          
+            music_detected = self.mlp.predict(features_flat)[0]
+            diagnostic = 'Music' if music_detected else 'Noise/speech' 
+            
+            # Store the features - REMOVE
+            self.predictions.append(music_detected)
+            if self.features is None:            
+                self.features = features_flat  
+                self.audio_data = audio_data         
+            else:
+                self.features = np.vstack((self.features, features_flat))
+                self.audio_data = np.hstack((self.audio_data, audio_data))                
+                     
+        return(music_detected, diagnostic)
 
     
 if __name__ == '__main__':                       

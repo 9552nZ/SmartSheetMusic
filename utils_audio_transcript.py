@@ -157,7 +157,7 @@ def plot_dtw_distance(cum_distance):
     
     return()
 
-def plot_alignment(times_cor_est, times_ori_est, times_cor_act, times_ori_act):
+def plot_alignment(times_cor_est, times_ori_est, times_cor_act, times_ori_act, times_ori_est_filtered=None):
     '''
     Create to plots to evaluate the alignment output of the matching procedure:
     - plot 1: actual original time vs actual corrupted time / estimated original times vs estimated corrupted times
@@ -165,10 +165,7 @@ def plot_alignment(times_cor_est, times_ori_est, times_cor_act, times_ori_act):
     '''
     
     import matplotlib.pyplot as plt
-    
-    # Calc the alignment error
-    alignment_error = calc_alignment_stats(times_cor_est, times_ori_est, times_cor_act, times_ori_act)
-    
+        
     max_time = max(np.max(times_cor_est), np.max(times_ori_est), np.max(times_cor_act), np.max(times_ori_act))
     
     fig = plt.figure()
@@ -177,21 +174,29 @@ def plot_alignment(times_cor_est, times_ori_est, times_cor_act, times_ori_act):
     ax.plot(times_ori_est, times_cor_est)
     plt.ylabel('Corrupted time (secs)')
     plt.xlabel('Original time (secs)')
-    plt.legend(['Actual', 'Estimated'])
+    
     plt.title('Corrupted and original times')
     plt.xlim(0, max_time)
     
-#     ax = fig.add_subplot(312)
-#     ax.plot(times_ori_est, alignment_error)
-#     plt.title('Alignment error')
-#     plt.xlabel('Original time (secs)')
-#     plt.xlim(0, max_time)
+    if times_ori_est_filtered:
+        ax.plot(times_ori_est_filtered, times_cor_est)
+        plt.legend(['Actual', 'Estimated (raw)', 'Estimated (filtered)'])
+    else:
+        plt.legend(['Actual', 'Estimated'])
+    
+    # Calc the alignment error
+    alignment_error = calc_alignment_stats(times_cor_est, times_ori_est, times_cor_act, times_ori_act)
     
     ax = fig.add_subplot(212)
     ax.plot(times_cor_est, alignment_error)
     plt.title('Alignment error')
     plt.xlabel('Corrupted time (secs)')
-    plt.xlim(0, max_time)    
+    plt.xlim(0, max_time)
+    
+    if times_ori_est_filtered:
+        alignment_error_filtered = calc_alignment_stats(times_cor_est, times_ori_est_filtered, times_cor_act, times_ori_act)
+        ax.plot(times_cor_est, alignment_error_filtered)
+        plt.legend(['Raw', 'Filtered'])    
     
     return()
 
@@ -457,7 +462,7 @@ def calc_nb_sample_stft(sr, hop_length, nb_sec):
     return(int(ceil(sr*float(nb_sec)/hop_length)) * hop_length-1)
     
 
-def record(record_sec, sr=SR, audio_format = AUDIO_FORMAT_DEFAULT, save=False, filename_wav_out="file.wav"):
+def record(record_sec, sr=SR, audio_format="int16", save=False, filename_wav_out="file.wav"):
     '''
     Record the input sound from the micro using pyaudio.
     We can save the output into a .wav file or return as numpy array.
@@ -544,7 +549,8 @@ def start_and_record(filename, filename_new, sr=SR):
     DETACHED_PROCESS = 0x00000008    
     
     # Find the lenghts (in secs) of teh target wave file.
-    record_length = get_length_wav(filename)
+    #record_length = get_length_wav(filename)
+    record_length = 36.0
     
     # Launch the wav via MPC.
     cmd = r'C:\\Program Files\\MPC-HC\\mpc-hc64.exe {}'.format(filename)        
