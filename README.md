@@ -36,6 +36,7 @@
 - http://ecmlpkdd2017.ijs.si/papers/paperID187.pdf
 - https://www.eecs.qmul.ac.uk/~simond/pub/2012/Arzt-Widmer-Dixon-EUSIPCO2012.pdf
 - http://citeseerx.ist.psu.edu/viewdoc/download?doi=10.1.1.414.9462&rep=rep1&type=pdf
+- https://cran.r-project.org/web/packages/dtw/vignettes/dtw.pdf
 
 ## Audio Databases
 - https://staff.aist.go.jp/m.goto/RWC-MDB/
