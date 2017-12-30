@@ -74,6 +74,7 @@ class OnlineDTW():
                  diag_cost=1.2, 
                  alpha=1.0, 
                  smoothing_parameter=1.0,
+                 positions_type='min',
                  light_run=True):
         
         
@@ -101,7 +102,10 @@ class OnlineDTW():
         self.min_data = 20 # min number of input frames to compute before doing anything        
         self.diag_cost = diag_cost # the cost for the diagonal (1.0<=x<=2.0, may be set to less than 2 to let the algorithm favour diagonal moves)
         self.alpha = alpha # Alpha enable to either use cumulative distance (alpha = 1) or EWMA distance (alpha < 1).
-        self.smoothing_parameter = smoothing_parameter          
+        self.smoothing_parameter = smoothing_parameter
+        
+        # Position reported
+        self.positions_type = positions_type           
                 
         # Boolean to check if the new input has been processed
         self.input_advanced = False
@@ -277,12 +281,16 @@ class OnlineDTW():
         Append idx_act to the list of estimated positions (and the equivalent in seconds). 
         In the case we have the midi_object available, also report the position in ticks
         '''
+        position_type = self.positions_type
         
-        self.position = self.idx_act # RESTORE, MAYBE.... 
-#         self.position.append(np.nanargmin(self.cum_distance[0:self.idx_act+1,self.idx_est]))
-#         adj_distance = self.cum_distance[:,self.idx_est] / np.arange(1,self.cum_distance.shape[0]+1)
-#         self.position = np.nanargmin(adj_distance)
-#         self.position = np.nanargmin(self.cum_distance[:,self.idx_est])
+        if position_type == 'idx_act':
+            self.position = self.idx_act
+        elif position_type == 'min': 
+            self.position = np.nanargmin(self.cum_distance[:,self.idx_est])
+        elif position_type == 'adj_min':            
+            adj_distance = self.cum_distance[:,self.idx_est] / np.arange(1,self.cum_distance.shape[0]+1)
+            self.position = np.nanargmin(adj_distance)
+        
         self.positions.append(self.position)  
         
     def plot_dtw_distance(self, paths=[-1]):
@@ -300,6 +308,9 @@ class OnlineDTW():
         '''
         Called for every new frame of the live feed, for which we run the online DTW
         '''
+        
+        if features_est_new.shape != (self.nb_bin_feature,):
+            raise(ValueError('Incompatible shape, expect 1D array with {} items'.format(self.nb_bin_feature)))
         
         # Store the new features
         self.features_est[self.idx_est+1, :] = features_est_new
