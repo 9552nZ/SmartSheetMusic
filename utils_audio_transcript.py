@@ -157,46 +157,59 @@ def plot_dtw_distance(cum_distance):
     
     return()
 
-def plot_alignment(times_cor_est, times_ori_est, times_cor_act, times_ori_act, times_ori_est_filtered=None):
+def plot_alignment(times_est_all, times_cor_act, times_ori_act, legend_items=['Estimated']):
     '''
     Create to plots to evaluate the alignment output of the matching procedure:
-    - plot 1: actual original time vs actual corrupted time / estimated original times vs estimated corrupted times
-    - plot 2: alignment error, the y axis represents the difference to "true" alignment    
+    - plot 1: actual corrupted time vs. actual original time / estimated corrupted times vs estimated original times
+    - plot 2: alignment error, the y axis represents the difference to "true" alignment
+    
+    Parameters
+    ----------
+    times_est_all : list 
+        List of tuples of np.ndarray.
+        [(times_cor_est1, times_cor_act1), (times_cor_est2, times_cor_act2), ...]  
+        Corresponds to the alignment output for competing alignment procedures.
+        
+    times_cor_act : np.ndarray
+        The ground-truth corrupted times.
+        
+    times_ori_act : np.ndarray
+        The ground-truth original times.
+        
+    legend_items : list
+        Labels for the competing alignment procedures.
+            
     '''
     
     import matplotlib.pyplot as plt
-        
-    max_time = max(np.max(times_cor_est), np.max(times_ori_est), np.max(times_cor_act), np.max(times_ori_act))
     
+    # Find the largest corrupted time, to resize the x axis
+    max_time = -np.inf
+    for times_est in times_est_all:
+        max_time = max(max_time, np.max(times_est[0]))
+    
+    # Plot all the alignments in the corrupted  vs. original space
+    # For each point on the x axis, we can read the estimated original time in the y axis
     fig = plt.figure()
     ax = fig.add_subplot(211)    
-    ax.plot(times_ori_act, times_cor_act)
-    ax.plot(times_ori_est, times_cor_est)
-    plt.ylabel('Corrupted time (secs)')
-    plt.xlabel('Original time (secs)')
-    
+    ax.plot(times_cor_act, times_ori_act)
+    for i, times_est in enumerate(times_est_all):
+        ax.plot(times_est[0], times_est[1], 'C'+str(i+1))
+    plt.xlabel('Corrupted time (secs)')
+    plt.ylabel('Original time (secs)')    
     plt.title('Corrupted and original times')
-    plt.xlim(0, max_time)
+    plt.xlim(0, max_time)    
+    plt.legend(['Actual'] + legend_items)
     
-    if times_ori_est_filtered:
-        ax.plot(times_ori_est_filtered, times_cor_est)
-        plt.legend(['Actual', 'Estimated (raw)', 'Estimated (filtered)'])
-    else:
-        plt.legend(['Actual', 'Estimated'])
-    
-    # Calc the alignment error
-    alignment_error = calc_alignment_stats(times_cor_est, times_ori_est, times_cor_act, times_ori_act)
-    
-    ax = fig.add_subplot(212)
-    ax.plot(times_cor_est, alignment_error)
+    # Plot the aligment error
+    ax = fig.add_subplot(212)    
+    for i, times_est in enumerate(times_est_all):
+        alignment_error = calc_alignment_stats(times_est[0], times_est[1], times_cor_act, times_ori_act)        
+        ax.plot(times_est[0], alignment_error, 'C'+str(i+1))
     plt.title('Alignment error')
     plt.xlabel('Corrupted time (secs)')
     plt.xlim(0, max_time)
-    
-    if times_ori_est_filtered:
-        alignment_error_filtered = calc_alignment_stats(times_cor_est, times_ori_est_filtered, times_cor_act, times_ori_act)
-        ax.plot(times_cor_est, alignment_error_filtered)
-        plt.legend(['Raw', 'Filtered'])    
+    plt.legend(legend_items) 
     
     return()
 
@@ -632,3 +645,92 @@ def calc_mean_random_distance(chromagram):
     mean_dist = np.mean(dists)
     
     return(mean_dist)
+
+def find_relative_mins(arr, order, nb_relative_mins):
+    '''
+    Find the local / relative minima in a 2D array (find the per-column mins).
+    
+    Parameters
+    ----------
+    arr : np.ndarray (n x m)
+        The array for which we find the local mins (find the per-column mins).
+        
+    order : int
+        How many points on each side to use for the comparison
+        to consider ``comparator(n, n+x)`` to be True.
+        
+    nb_relative_mins : int
+        How many local minima we want to return. 
+        We select the nb_relative_mins of the minima.
+        
+    Returns
+    -------    
+    relative_mins_idxs : np.ndarray (nb_relative_mins x m)
+        The indices of the local minima. If there were not enough minima, we return NaNs.
+
+    relative_mins_values : np.ndarray (nb_relative_mins x m)
+        The values of the local minima. If there were not enough minima, we return NaNs.
+            
+    '''
+    
+    # Import the local min function from Scipy here as we won't 
+    # use it anywhere else
+    from scipy.signal import argrelmin
+    
+    # Get the shape and replace the NaNs with +inf
+    nb_col = arr.shape[1]
+    arr[np.isnan(arr)] = np.inf
+    
+    # Set up placeholders for the output
+    relative_mins_idxs = np.ones((nb_relative_mins, nb_col))*np.nan
+    relative_mins_values = np.ones((nb_relative_mins, nb_col))*np.nan
+    
+    # Loop over columns
+    for k in range(nb_col):
+        
+        # Get the indices of the local mins (all of them at a given order)        
+        idxs = argrelmin(arr[:, k], order=order, mode='wrap')[0]
+        
+        # Sort the local mins
+        values = arr[idxs, k]
+        idxs_to_sort = np.argsort(values)
+        idxs_sorted = idxs[idxs_to_sort]
+        values_sorted = values[idxs_to_sort]
+        
+        # Only return the smallest mins 
+        nb_idxs = len(idxs)        
+        mask = np.arange(0, min(nb_idxs, nb_relative_mins))
+        relative_mins_idxs[mask, k] = idxs_sorted[mask]
+        relative_mins_values[mask, k] = values_sorted[mask]
+        
+    return(relative_mins_idxs, relative_mins_values)
+
+def dtw(C, weights_mul=np.array([1.0, 1.0, 1.0]), subseq=False):
+            
+    D = C.copy()
+
+    # Set starting point to C[0, 0]    
+    D[0, 0:] = np.cumsum(C[0,:])
+    
+    if subseq:
+        D[0:, 0] = C[:, 0]
+    else:
+        D[0:, 0] = np.cumsum(C[:, 0])
+    
+    r, c = np.array(C.shape)-1
+    for k in range(1, r+c):
+        # We have i>=0, i<r, j>0, j<c and j-i+1=k
+        i = np.arange(max(0, k-c), min(r, k))
+        j = i[::-1] + k - min(r, k) - max(0, k-c)
+#         D[i+1, j+1] += np.minimum(np.minimum(D[i, j] * weights_mul[0], 
+#                                              D[i, j+1] * weights_mul[1]), 
+#                                              D[i+1, j] * weights_mul[2])
+        D[i+1, j+1] = np.minimum(np.minimum(D[i, j] + D[i+1, j+1] * weights_mul[0], 
+                                             D[i, j+1] + D[i+1, j+1] * weights_mul[1]), 
+                                             D[i+1, j] + D[i+1, j+1] * weights_mul[2])
+         
+        
+    return(D)
+
+
+    
