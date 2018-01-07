@@ -19,6 +19,7 @@ AUDIO_FORMAT_DEFAULT = "float32"
 AUDIO_FORMAT_MAP = {"int16":(np.int16, paInt16), 
                     "int32":(np.int32, paInt32),
                     "float32":(np.float32, paFloat32)}
+FFMPEG_PATH = '"C:/Program Files (x86)/ffmpeg/bin/ffmpeg.exe"' 
 
 def distance_midi_pitch(x, y):
     """
@@ -425,18 +426,17 @@ def youtube_download_audio(yt_id, start_sec, length_sec, filename_wav_out):
         False if the youtube-dl command has failed. True otherwise.
     '''
     
-    import subprocess
+    from subprocess import check_output, call
     
     # Sample rate for the output ".wav" file
-    sr = 11025
+    sr = SR
     
     # Reformat the start_sec and length_sec 
     start_sec = str(timedelta(seconds=start_sec))
     length_sec = str(timedelta(seconds=length_sec))
     
-    # The target path for the youtube-dl and ffmpeg executables
+    # The target path for the youtube-dl 
     ytdl_exe_path = '"C:/Program Files (x86)/ffmpeg/bin/youtube-dl.exe"'
-    ffmpeg_exe_path ='"C:/Program Files (x86)/ffmpeg/bin/ffmpeg.exe"'
     
     # The root URL for Youtube
     yt_url = "https://youtube.com/watch?v={}".format(yt_id)
@@ -447,19 +447,44 @@ def youtube_download_audio(yt_id, start_sec, length_sec, filename_wav_out):
     # Need to execute the youtube-dl in a try block as the command fails 
     # if the video has been deleted.
     try:
-        real_url = subprocess.check_output(ytdl_command)
+        real_url = check_output(ytdl_command)
         real_url = real_url[0:len(real_url)-1] # remove the return character
         
         # The ffmpeg (may need to change the codec here) 
-        ffmpeg_command = '{} -ss {} -i "{}" -t {} -acodec pcm_s16le -ac 1 -ar {} {}'.format(ffmpeg_exe_path, start_sec, real_url, length_sec, sr, filename_wav_out)
+        ffmpeg_command = '{} -ss {} -i "{}" -t {} -acodec pcm_s16le -ac 1 -ar {} {}'.format(FFMPEG_PATH, start_sec, real_url, length_sec, sr, filename_wav_out)
     
-        subprocess.call(ffmpeg_command)
+        call(ffmpeg_command)
         out = True
         
     except:
         out = False
         
     return(out)
+
+def convert_audio_file(filename_in, filename_wav_out, sr):
+    '''
+    Convert an audio file to another audio file using ffmpeg.
+    We may use the function to change the format (e.g. mp3 to wav), the codec,
+    the sample rate, the number of chanels...
+    
+    Parameters
+    ----------
+    filename_in : str
+        The path for the input file, e.g. a wav or mp3 file
+        
+    filename_wav_out : str
+        The path for the output file.
+        
+    sr : int > 0
+        The sample rate.
+    '''
+        
+    from subprocess import call
+     
+    ffmpeg_command = '{} -i "{}" -acodec pcm_s16le -ac 1 -ar {} {}'.format(FFMPEG_PATH, filename_in, sr, filename_wav_out)
+    call(ffmpeg_command)
+    
+    return
 
 def calc_nb_segment_stft(hop_length, nb_sample):
     '''
@@ -677,9 +702,11 @@ def find_relative_mins(arr, order, nb_relative_mins):
     # use it anywhere else
     from scipy.signal import argrelmin
     
+    arr_copy = arr.copy()
+    
     # Get the shape and replace the NaNs with +inf
-    nb_col = arr.shape[1]
-    arr[np.isnan(arr)] = np.inf
+    nb_col = arr_copy.shape[1]
+    arr_copy[np.isnan(arr_copy)] = np.inf
     
     # Set up placeholders for the output
     relative_mins_idxs = np.ones((nb_relative_mins, nb_col))*np.nan
@@ -689,10 +716,10 @@ def find_relative_mins(arr, order, nb_relative_mins):
     for k in range(nb_col):
         
         # Get the indices of the local mins (all of them at a given order)        
-        idxs = argrelmin(arr[:, k], order=order, mode='wrap')[0]
+        idxs = argrelmin(arr_copy[:, k], order=order, mode='wrap')[0]
         
         # Sort the local mins
-        values = arr[idxs, k]
+        values = arr_copy[idxs, k]
         idxs_to_sort = np.argsort(values)
         idxs_sorted = idxs[idxs_to_sort]
         values_sorted = values[idxs_to_sort]
@@ -706,31 +733,63 @@ def find_relative_mins(arr, order, nb_relative_mins):
     return(relative_mins_idxs, relative_mins_values)
 
 def dtw(C, weights_mul=np.array([1.0, 1.0, 1.0]), subseq=False):
-            
+                
     D = C.copy()
 
     # Set starting point to C[0, 0]    
+    D[0, 0:] = np.cumsum(C[0,:])    
+    
+    if subseq:
+        D[0:, 0] = C[:, 0]
+    else:
+        D[0:, 0] = np.cumsum(C[:, 0])        
+    
+    r, c = np.array(C.shape)-1    
+    for k in range(1, r+c):
+        # We have i>=0, i<r, j>0, j<c and j-i+1=k
+        i = np.arange(max(0, k-c), min(r, k))
+        j = i[::-1] + k - min(r, k) - max(0, k-c)
+        
+        D_tmp = np.array([D[i, j] + D[i+1, j+1] * weights_mul[0],
+                          D[i, j+1] + D[i+1, j+1] * weights_mul[1],         
+                          D[i+1, j] + D[i+1, j+1] * weights_mul[2]])
+        
+        D[i+1, j+1] = D_tmp[np.argmin(D_tmp, axis=0), np.arange(0, len(i))]  
+        
+    return(D)
+
+def dtw2(C, weights_mul=np.array([1.0, 1.0, 1.0]), subseq=False):
+                
+    D = C.copy()
+    D_steps = np.ones(C.shape, dtype='int32')
+
+    # Set starting point to C[0, 0]    
     D[0, 0:] = np.cumsum(C[0,:])
+    D_steps[0, 0:] = np.cumsum(D_steps[0,:])
     
     if subseq:
         D[0:, 0] = C[:, 0]
     else:
         D[0:, 0] = np.cumsum(C[:, 0])
+        D_steps[0:, 0] = np.cumsum(D_steps[:, 0])
     
-    r, c = np.array(C.shape)-1
+    r, c = np.array(C.shape)-1    
     for k in range(1, r+c):
         # We have i>=0, i<r, j>0, j<c and j-i+1=k
         i = np.arange(max(0, k-c), min(r, k))
         j = i[::-1] + k - min(r, k) - max(0, k-c)
-#         D[i+1, j+1] += np.minimum(np.minimum(D[i, j] * weights_mul[0], 
-#                                              D[i, j+1] * weights_mul[1]), 
-#                                              D[i+1, j] * weights_mul[2])
-        D[i+1, j+1] = np.minimum(np.minimum(D[i, j] + D[i+1, j+1] * weights_mul[0], 
-                                             D[i, j+1] + D[i+1, j+1] * weights_mul[1]), 
-                                             D[i+1, j] + D[i+1, j+1] * weights_mul[2])
-         
         
-    return(D)
+        D_tmp = np.array([D[i, j] + D[i+1, j+1] * weights_mul[0],
+                          D[i, j+1] + D[i+1, j+1] * weights_mul[1],         
+                          D[i+1, j] + D[i+1, j+1] * weights_mul[2]])
+        
+        D_steps_tmp = np.array([D_steps[i, j], D_steps[i, j+1], D_steps[i+1, j]]) 
+        
+        argmins = np.argmin(D_tmp, axis=0)
+        D_steps[i+1, j+1] += D_steps_tmp[argmins, np.arange(0, len(argmins))]
+        D[i+1, j+1] = D_tmp[argmins, np.arange(0, len(argmins))]  
+        
+    return(D, D_steps)
 
 
     
