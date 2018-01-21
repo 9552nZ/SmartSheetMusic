@@ -1,5 +1,10 @@
+'''
+Reg test for the dtw_fast library.
+'''
+
 import unittest
 import numpy as np
+from numpy import inf
 from scipy.spatial.distance import cdist
 from dtw_fast import dtw_fast
 
@@ -57,11 +62,25 @@ class TestDtwFast(unittest.TestCase):
         dtw1 = dtw_fast(self.C1, self.weights1, 0, 2)
         
         res1 = np.array(
-           [[  0.,   0.,   1.,   2.,   3.,   5.,   8.,  12.],
-            [  1.,   1.,   0.,   0.,   0.,   1.,   3.,   6.],
-            [  2.,   3.,   1.,   1.,   1.,   0.,   1.,   3.],
-            [  3.,   5.,   3.,   3.,   3.,   1.,   0.,   1.],
-            [  4.,   7.,   6.,   6.,   6.,   3.,   1.,   0.]])
+            [[  0.,   0.,  inf,  inf,  inf,  inf,  inf,  inf],
+             [  1.,   1.,   0.,   0.,   0.,  inf,  inf,  inf],
+             [ inf,   3.,   1.,   1.,   1.,   0.,   1.,   3.],
+             [ inf,   6.,   3.,   3.,   3.,   1.,   0.,   1.],
+             [ inf,  10.,   9.,   6.,   6.,   3.,   1.,   0.]])
+
+        
+        self.assertTrue(np.all(dtw1 == res1))
+        
+    def test_with_subseq_with_max_consecutive_step(self):
+        
+        dtw1 = dtw_fast(self.C1, self.weights1, 1, 2)
+        
+        res1 = np.array(
+            [[  0.,   0.,  inf,  inf,  inf,  inf,  inf,  inf],
+             [  1.,   1.,   0.,   0.,   0.,  inf,  inf,  inf],
+             [  2.,   3.,   1.,   1.,   1.,   0.,   1.,   3.],
+             [  3.,   5.,   3.,   3.,   3.,   1.,   0.,   1.],
+             [  4.,   7.,   8.,   6.,   6.,   3.,   1.,   0.]])
 
         
         self.assertTrue(np.all(dtw1 == res1))
