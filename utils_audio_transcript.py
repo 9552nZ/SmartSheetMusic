@@ -153,7 +153,7 @@ def plot_dtw_distance(cum_distance):
     mask_cols = np.invert(np.all(np.isnan(cum_distance), 0))
     cum_distance = cum_distance[mask_rows, :][:, mask_cols]
     
-    plt.pcolor(cum_distance, cmap=Blues, alpha=0.8, vmin=np.nanmin(cum_distance), vmax=np.nanmax(cum_distance))
+    plt.pcolor(cum_distance, cmap=Blues, alpha=0.8, vmin=np.nanmin(cum_distance), vmax=np.nanmax(cum_distance));
     plt.colorbar()
     
     return()
@@ -759,37 +759,83 @@ def dtw(C, weights_mul=np.array([1.0, 1.0, 1.0]), subseq=False):
     return(D)
 
 def dtw2(C, weights_mul=np.array([1.0, 1.0, 1.0]), subseq=False):
-                
+                 
     D = C.copy()
     D_steps = np.ones(C.shape, dtype='int32')
-
+ 
     # Set starting point to C[0, 0]    
     D[0, 0:] = np.cumsum(C[0,:])
     D_steps[0, 0:] = np.cumsum(D_steps[0,:])
-    
+     
     if subseq:
         D[0:, 0] = C[:, 0]
     else:
         D[0:, 0] = np.cumsum(C[:, 0])
         D_steps[0:, 0] = np.cumsum(D_steps[:, 0])
-    
+     
     r, c = np.array(C.shape)-1    
     for k in range(1, r+c):
         # We have i>=0, i<r, j>0, j<c and j-i+1=k
         i = np.arange(max(0, k-c), min(r, k))
         j = i[::-1] + k - min(r, k) - max(0, k-c)
-        
+         
         D_tmp = np.array([D[i, j] + D[i+1, j+1] * weights_mul[0],
                           D[i, j+1] + D[i+1, j+1] * weights_mul[1],         
                           D[i+1, j] + D[i+1, j+1] * weights_mul[2]])
-        
+         
         D_steps_tmp = np.array([D_steps[i, j], D_steps[i, j+1], D_steps[i+1, j]]) 
-        
+         
         argmins = np.argmin(D_tmp, axis=0)
         D_steps[i+1, j+1] += D_steps_tmp[argmins, np.arange(0, len(argmins))]
         D[i+1, j+1] = D_tmp[argmins, np.arange(0, len(argmins))]  
-        
+         
     return(D, D_steps)
-
-
-    
+ 
+# def dtw3(C, weights_mul=np.array([1.0, 1.0, 1.0]), subseq=False, max_consecutive_steps=3):%np.inf
+#     
+#     STEP_DIAG = 0
+#     STEP_COL = 1
+#     STEP_ROW = 2
+#                 
+#     D = C.copy()
+#     steps = np.zeros(C.shape, dtype='int32')
+#     consecutive_steps = np.zeros(C.shape, dtype='int32') + np.nan
+# 
+#     # Set starting point to C[0, 0]    
+#     D[0, :] = np.cumsum(C[0,:])
+#     steps[0, 1:] = STEP_COL 
+#     consecutive_steps[0, :] = np.arange(1, min(C.shape[1], max_consecutive_steps)+1) * STEP_COL
+#         
+#     if subseq:
+#         D[:, 0] = C[:, 0]
+#         steps [1:, 0] = STEP_COL
+#         consecutive_steps[:, 0] = STEP_ROW
+#     else:
+#         D[:, 0] = np.cumsum(C[:, 0])
+#         steps[1:, 0] = STEP_ROW
+#         consecutive_steps[:, 0] = np.arange(1, min(C.shape[0], max_consecutive_steps)+1) * STEP_ROW 
+#     
+#     r, c = np.array(C.shape)-1    
+#     for k in range(1, r+c):
+#         # We have i>=0, i<r, j>0, j<c and j-i+1=k
+#         i = np.arange(max(0, k-c), min(r, k))
+#         j = i[::-1] + k - min(r, k) - max(0, k-c)
+#         
+#         D_tmp = np.array([D[i, j] + D[i+1, j+1] * weights_mul[STEP_DIAG],
+#                           D[i, j+1] + D[i+1, j+1] * weights_mul[STEP_COL],         
+#                           D[i+1, j] + D[i+1, j+1] * weights_mul[STEP_ROW]])
+#         
+# #         cum_steps_tmp = np.array([cum_steps[i, j], cum_steps[i, j+1], cum_steps[i+1, j]])
+#          
+#         i_steps = np.vstack([np.maximum(i - m, 0) for m in np.arange(max_consecutive_steps-1,-1,-1)])
+#         
+#         steps[i, j]
+#         if k >=  max_consecutive_steps:
+#             a=1
+#         
+#         argmins = np.argmin(D_tmp, axis=0)
+#         consecutive_steps[i+1, j+1] += argmins 
+# #         cum_steps[i+1, j+1] += cum_steps_tmp[argmins, np.arange(0, len(argmins))]
+#         D[i+1, j+1] = D_tmp[argmins, np.arange(0, len(argmins))]  
+#         
+#     return(D, 1)

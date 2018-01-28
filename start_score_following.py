@@ -24,11 +24,14 @@ import datetime # REMOVE
 import subprocess # REMOVE
 
 # Flag for the communication with the GUI
-# Replace by integers
-STOP = "stop"
-START = "start"
-MATCH = "match"
-PAUSE = "pause"
+# TODO : Replace by integers
+STOP = b"stop"
+START = b"start"
+MATCH = b"match"
+PAUSE = b"pause"
+
+# Flag to see if we run on Python 3 or more
+PYTHON_LEGACY = sys.version_info < (3, 0) 
 
 class MatcherManager():
     ''' 
@@ -39,11 +42,11 @@ class MatcherManager():
     - the music detector
     '''
     def __init__(self, filename_mid_full, callback_fcn):
-        self.chunk = 16384/16 # The chunk of data processed per pyaudio batch        
+        self.chunk = int(16384/16) # The chunk of data processed per pyaudio batch        
         self.sr = utils.SR # Sample rate
         self.hop_length = utils.HOP_LENGTH 
         self.audio_format = utils.AUDIO_FORMAT_DEFAULT # The low-level audio format
-        self.detect_music = True # Set to true to only start once the MLP has detected music
+        self.detect_music = False # Set to true to only start once the MLP has detected music
         self.callback_fcn = callback_fcn # The pyaudio callback function  
          
         # Split the path of the midi input between the directory and file name.
@@ -51,7 +54,8 @@ class MatcherManager():
         self.wd = wd + "/" 
      
         # Initialise the matcher
-        self.matcher = Matcher(self.wd, self.filename, self.sr, self.hop_length, compute_chromagram_fcn_kwargs={'n_fft':self.hop_length*2, 'n_chroma':12})
+        self.matcher = Matcher(self.wd, self.filename, self.sr, self.hop_length, 
+                               compute_chromagram_fcn_kwargs={'n_fft':self.hop_length*2, 'n_chroma':12})
         
         # Initialise the audio data buffer
         self.audio_data = np.array([])
@@ -69,7 +73,15 @@ class MatcherManager():
         
         # We initialise with a STOP status for the GUI and a PAUSE for the matcher         
         self.status = STOP
-        self.status_matcher = PAUSE
+        self.status_matcher = PAUSE                         
+        
+    def __getstate__(self):
+        '''
+        Called by pickle.dump to know what attributes need to be pickled. 
+        Pickle everything but the sockets and pyaudio.
+        '''
+        return {k: v for k, v in self.__dict__.items() if k not in ['socket_pub', 'socket_sub', 'pyaudio', 'stream', 'callback_fcn']}
+    
         
     def reinit(self):
         '''
@@ -77,7 +89,14 @@ class MatcherManager():
         Reinitialise the matcher, using the already computed chromagram.
         '''         
         midi_obj = self.matcher.midi_obj
-        self.matcher = Matcher(self.wd, self.filename, self.sr, self.hop_length, chromagram_act=self.matcher.chromagram_act)
+        
+        # Re-initilaise the matcher, making sure that we have the same args as the 
+        # ones used for initialisation.
+        self.matcher = Matcher(self.wd, self.filename, self.sr, self.hop_length,
+                               compute_chromagram_fcn=self.matcher.compute_chromagram_fcn,
+                               compute_chromagram_fcn_kwargs=self.matcher.compute_chromagram_fcn_kwargs, 
+                               chromagram_act=self.matcher.dtw.features_act)
+        
         self.matcher.midi_obj = midi_obj 
         self.status = STOP
  
@@ -88,8 +107,14 @@ class MatcherManager():
         context = zmq.Context()
         self.socket_pub = context.socket(zmq.PUB)
         self.socket_pub.bind("tcp://*:5555")
-        self.socket_sub = context.socket(zmq.SUB)        
-        self.socket_sub.setsockopt(zmq.SUBSCRIBE, '')
+        self.socket_sub = context.socket(zmq.SUB)
+        
+        # Need to use different options for python3 vs python2
+        if PYTHON_LEGACY:
+            self.socket_sub.setsockopt(zmq.SUBSCRIBE, '')
+        else:
+            self.socket_sub.setsockopt_string(zmq.SUBSCRIBE, r'')            
+        
         self.socket_sub.connect("tcp://localhost:5556")
         
     def start_stream(self):
@@ -142,15 +167,15 @@ class MatcherManager():
         new_audio_data = np.fromstring(new_audio_data, dtype=utils.AUDIO_FORMAT_MAP[self.audio_format][0])
         
         # Keep a local buffer (we keep as many samples as the music detection procedure requires)
-        self.audio_data = np.append(self.audio_data, new_audio_data)        
-        self.audio_data = self.audio_data[max(len(self.audio_data)-self.music_detecter.mlp.nb_sample, 0):len(self.audio_data)]
+        # TODO : move to update_status_matcher()
+        if self.detect_music:
+            self.audio_data = np.append(self.audio_data, new_audio_data)        
+            self.audio_data = self.audio_data[max(len(self.audio_data)-self.music_detecter.mlp.nb_sample, 0):len(self.audio_data)]
         
         # Check the status
         self.update_status_matcher()
         if self.status_matcher == PAUSE:
             return    
-
-#         print "Time: {}   Size chromagram:{}    Size audio: {}".format(datetime.datetime.now().time(), chromagram_est.shape,  len(self.audio_data))
         
         # Run the online matching with the new data only.
         # This will be a problem if we use a larger music detection buffer, careful!!!
@@ -161,9 +186,14 @@ class MatcherManager():
         Send the current position to the GUI via the socket.
         '''
         root_str = "Sending current position: {}         Status: {}({})"
-        print root_str.format(self.matcher.position_tick, self.status_matcher, self.music_detection_diagnostic)
-                
-        self.socket_pub.send(bytes(self.matcher.position_tick))                               
+        print(root_str.format(self.matcher.position_tick, self.status_matcher, self.music_detection_diagnostic))
+        
+        # Need to be careful when sending the bytes representation of an int
+        # The bytes functions behaves differently in python 2 vs python 3.
+        if PYTHON_LEGACY:
+            self.socket_pub.send(bytes(self.matcher.position_tick))
+        else:                               
+            self.socket_pub.send_string(str(self.matcher.position_tick))
  
     def plot_chromagram(self):
         '''
@@ -186,7 +216,20 @@ class MatcherManager():
             if plt.get_fignums():
                 self.plot_data = utils.plot_spectrogram(spectrogram, plot_data=self.plot_data)
             else:
-                self.plot_data = utils.plot_spectrogram(spectrogram)                            
+                self.plot_data = utils.plot_spectrogram(spectrogram)
+                
+    def save(self):
+        '''
+        Store the MatcherManager
+        '''
+        from pickle import dump
+        
+        filename_output = utils.WD + 'ScoreFollowingLogs\matcher1.pkl' 
+        file_output = open(filename_output, 'wb')
+        
+        dump(self, file_output)
+        
+        print('MatcherManager stored in {}'.format(filename_output))
             
             
     def callback(self, new_audio_data):
@@ -206,20 +249,20 @@ class MatcherManager():
         
         if self.status == STOP and flag == STOP:
             pass
+        
         elif (self.status == START and flag == START): 
             self.callback_main(new_audio_data)
             self.status = START
+            
         elif (self.status == STOP and flag == START):
-#             self.proc = subprocess.Popen("C:\Users\Alexis\Business\SmartSheetMusic\Samples\TestScoreFollowing/Chopin_Op028-01_003_20100611-SMD_4.wav", 
-#                                          shell=True,
-#                                          stdin=None, stdout=None, stderr=None, close_fds=True) # REMOVE
             self.callback_main(new_audio_data)
             self.status = START
+            
         elif self.status == START and flag == STOP:
-#             subprocess.call(['taskkill', '/F', '/T', '/PID', str(self.proc.pid)]) # REMOVE            
-            self.reinit()
-            self.status = STOP
+            self.save()            
+            self.reinit()            
             self.music_detection_diagnostic = ''
+            
         else:
             raise(ValueError('Unexpected status ({}) or flag ({})'.format(self.status, flag)))                    
                     
@@ -240,12 +283,12 @@ if __name__ == '__main__':
         filename_mid = sys.argv[1]
         callback_fcn = MatcherManager.callback        
     else:
-        filename_mid = "C:\Users\Alexis\Business\SmartSheetMusic\Samples\TestScoreFollowing/Chopin_Op028-01_003_20100611-SMD.mid"
+        filename_mid = utils.WD + '\Samples\IMSLP//' +  'Beethoven_Moonlight_Sonata_Op._27_No._2_Mvt._2.wav'
         callback_fcn = MatcherManager.callback_main
      
     matcher_manager = MatcherManager(filename_mid, callback_fcn)    
     
-#     t1 = datetime.datetime.now()
+    t1 = datetime.datetime.now()
     while matcher_manager.stream.is_active():
 #         matcher_manager.plot_chromagram()
 #         matcher_manager.plot_spectrogram()
@@ -253,8 +296,10 @@ if __name__ == '__main__':
         sleep(matcher_manager.chunk/float(matcher_manager.sr))
         t2 = datetime.datetime.now()
         
-#         if (t2-t1).total_seconds() > 5.0:            
-#             raise(ValueError('Time lapsed!!'))
+#         if (t2-t1).total_seconds() > 2.0:            
+#             break
                 
     matcher_manager.stream.stop_stream()
     matcher_manager.stream.close()    
+    
+    a=1    
