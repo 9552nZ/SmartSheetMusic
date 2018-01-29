@@ -194,29 +194,6 @@ class MatcherManager():
             self.socket_pub.send(bytes(self.matcher.position_tick))
         else:                               
             self.socket_pub.send_string(str(self.matcher.position_tick))
- 
-    def plot_chromagram(self):
-        '''
-        Use the function for online plotting of the chromagram.
-        '''
-        import matplotlib.pyplot as plt
-        
-        if len(self.music_detecter.features):
-            if plt.get_fignums():
-                self.pcol = utils.plot_chromagram(self.music_detecter.features.T, pcol=self.pcol)
-            else:
-                self.pcol = utils.plot_chromagram(self.music_detecter.features.T, sr=self.music_detecter.mlp.sr, hop_length=self.music_detecter.mlp.hop_length)
-                
-    def plot_spectrogram(self):
-        import librosa as lb
-        import matplotlib.pyplot as plt
-        if len(self.audio_data):                        
-            spectrogram = lb.feature.chroma_cqt(np.array(self.audio_data), norm=np.inf, sr=self.sr, hop_length=self.hop_length, n_chroma=84)
-            spectrogram = spectrogram[:,-1]
-            if plt.get_fignums():
-                self.plot_data = utils.plot_spectrogram(spectrogram, plot_data=self.plot_data)
-            else:
-                self.plot_data = utils.plot_spectrogram(spectrogram)
                 
     def save(self):
         '''
@@ -224,7 +201,7 @@ class MatcherManager():
         '''
         from pickle import dump
         
-        filename_output = utils.WD + 'ScoreFollowingLogs\matcher1.pkl' 
+        filename_output = utils.WD + 'ScoreFollowingLogs\matcher.pkl' 
         file_output = open(filename_output, 'wb')
         
         dump(self, file_output)
@@ -242,26 +219,29 @@ class MatcherManager():
         - send to callback_main if the GUI says to start
         - reinitialise if we are started and the GUI says to stop.
         '''
+        # Receive the instruction from the front-end
         try:
             flag = self.socket_sub.recv(flags=zmq.NOBLOCK) # What happens when we have multiple messages?? Maybe set the SUB to CONFLATE                                           
         except zmq.Again:
             flag = self.status
-        
+            
+        # Check if we have attained the end of the act features
+        reached_end_act = len(self.matcher.positions) > 0 and self.matcher.positions[-1] >= self.matcher.nb_obs_feature_act
+        flag = STOP if reached_end_act else flag  
+                        
         if self.status == STOP and flag == STOP:
             pass
         
-        elif (self.status == START and flag == START): 
-            self.callback_main(new_audio_data)
-            self.status = START
-            
-        elif (self.status == STOP and flag == START):
+        elif (self.status == START and flag == START) or (self.status == STOP and flag == START): 
             self.callback_main(new_audio_data)
             self.status = START
             
         elif self.status == START and flag == STOP:
+            # Send a stop instruction, save and reinitialise
+            self.socket_pub.send(bytes(STOP))
             self.save()            
             self.reinit()            
-            self.music_detection_diagnostic = ''
+            self.music_detection_diagnostic = ''            
             
         else:
             raise(ValueError('Unexpected status ({}) or flag ({})'.format(self.status, flag)))                    
@@ -290,8 +270,6 @@ if __name__ == '__main__':
     
     t1 = datetime.datetime.now()
     while matcher_manager.stream.is_active():
-#         matcher_manager.plot_chromagram()
-#         matcher_manager.plot_spectrogram()
         matcher_manager.publish_position()
         sleep(matcher_manager.chunk/float(matcher_manager.sr))
         t2 = datetime.datetime.now()

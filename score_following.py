@@ -331,12 +331,18 @@ class OnlineDTW():
             self.update_best_path(10)  
             
 class OnlineLocalDTW():
+    """
+    Online Local DTW. This is the top-level function, it only does 
+    the management of the input data. We call the cython implementation of
+    the DTW algorithm. We only run alignment on a sub-part of the cost matrix.    
+    We allow for subsequence alignment. There is no continuity constraint.    
+    """
     def __init__(self,
-                 features_act,
-                 distance_fcn=utils.distance_chroma, 
+                 features_act, 
                  diag_cost=1.0, 
                  dtw_width=50):
         
+        # Input features, the ones we want to track
         self.features_act = features_act 
         self.nb_obs_feature_act = features_act.shape[0]
         self.nb_bin_feature = features_act.shape[1]        
@@ -348,10 +354,9 @@ class OnlineLocalDTW():
         self.position = 0
         self.positions = []
         
+        # Initialise estimated idx (idx_est represent how many frames of the 
+        # live feed we have processed).
         self.idx_est = -1
-        
-        # Distance function
-        self.distance_fcn = distance_fcn
 
         # DTW parameters
         self.dtw_width = dtw_width 
@@ -371,22 +376,28 @@ class OnlineLocalDTW():
         Called for every new frame of the live feed, for which we run the online local DTW.
         '''
         
+        # Perform some basic checks on the input
         if features_est_new.shape != (self.nb_bin_feature,):
             raise(ValueError('Incompatible shape, expect 1D array with {} items'.format(self.nb_bin_feature)))
         
-        # TODO : ADD CHECK ON THE idx_act_lb AND idx_act_ub
+        if (idx_act_lb < 0 or idx_act_ub < 0 or idx_act_lb > idx_act_ub or             
+            idx_act_lb >= self.nb_obs_feature_act or idx_act_ub >= self.nb_obs_feature_act):           
+            raise(ValueError(b'Incompatible bounds ({}/{})'.format(idx_act_lb, idx_act_ub)))        
         
+        # Increment the live feed index
         self.idx_est += 1        
         
         # Store the new features
         self.features_est[self.idx_est, :] = features_est_new
         
         # Update the distance matrix 
-        # TODO - MAKE SURE WE ARE CONSISTENT WITH THE USUAL DISTANCE FCN
+        # We use the L2 norm to compute the local distance (frame / frame) 
         self.distance[:, self.idx_est] = np.reshape(cdist(self.features_act, np.atleast_2d(features_est_new)),-1,1)
         
+        # Extract the distance block that we care about
         distance_tmp = self.distance[idx_act_lb:idx_act_ub+1, max(self.idx_est-self.dtw_width+1, 0):self.idx_est+1]
-
+        
+        # Run the DTW with subsequence alignment (cython)
         cum_distance_tmp = dtw_fast(np.array(distance_tmp, dtype=np.float64) , self.weights_mul, 1, max_consecutive_steps)
         
         # Keep the last column of the alignment distance only 
@@ -395,9 +406,14 @@ class OnlineLocalDTW():
         self.cum_distance[idx_act_lb:idx_act_ub+1, self.idx_est] = cum_distance_tmp[:,-1]
 
 class MatcherFilter():
+    '''
+    Filter the output of the DTW procedure.
+    Also compute the search bounds for the DTW.
+    '''
     
     def __init__(self, nb_obs_act, nb_frames_dtw_est=30, nb_frames_dtw_act=100):
                     
+        # Number of frames in the act features
         self.nb_obs_act = nb_obs_act
         
         # Speed is the nb of act frames processed for one est frame
@@ -430,6 +446,10 @@ class MatcherFilter():
         self.start_max_consecutive_steps = 50               
         
     def update_speed(self):
+        '''
+        Estimate the speed at which the live feed is going (relative to the act data).
+        We could also rely on tempo estimation techniques.
+        '''
         
         if self.idx_est < self.nb_frames_dtw_est + self.nb_frames_speed_estimate:                        
             return                  
@@ -438,8 +458,10 @@ class MatcherFilter():
         self.speed = self.alpha_speed_estimate * self.speed + (1-self.alpha_speed_estimate) * speed  
         
     def update_position_base(self):
-        
-#         self.positions_base.append(int(round(self.positions_base[-1] + self.speed)) if self.idx_est>0 else 0)
+        '''
+        Update the base position, which it the slow-moving / benchmark position.
+        We use it to get the search bounds. 
+        '''        
         if self.idx_est < self.min_frames_position_base:
             self.positions_base.append(self.positions_base[-1] + self.speed if self.idx_est>0 else 0)
         else:
@@ -448,19 +470,29 @@ class MatcherFilter():
             self.positions_base.append(self.alpha_position_base * position_base_new + (1-self.alpha_position_base) * position_filtered_new)
                     
     def update_search_bounds(self):
+        '''
+        The search bounds define the area over which we want to perform the 
+        alignment in the act data.          
+        '''
         
         self.idx_act_lb = max(int(round(self.positions_base[-1])) - int(floor(self.nb_frames_dtw_act/2.0)), 0)
         self.idx_act_ub = min(int(round(self.positions_base[-1])) + int(ceil(self.nb_frames_dtw_act/2.0)), self.nb_obs_act - 1)
         
     def update_max_consecutive_steps(self):
-        
+        '''
+        We constrain the number of consecutive steps only if the alignment has
+        properly started. 
+        '''        
         if self.positions_base[-1] >= self.start_max_consecutive_steps:
             self.max_consecutive_steps = self.max_consecutive_steps_real
         else:  
             self.max_consecutive_steps = self.max_consecutive_steps_init
         
     def filter_position(self, cum_distance):        
-            
+        '''
+        Taking the DTW distance as input, run some heuristics to identify our best guess of 
+        the current position. In essence, we look for the point with the minimum DTW distance. 
+        '''
         cum_distance_tmp = cum_distance[:, self.idx_est]
         relative_mins_idxs, relative_mins_values = utils.find_relative_mins(np.atleast_2d(cum_distance_tmp).T, 10, 5)
         
@@ -478,6 +510,10 @@ class MatcherFilter():
         self.positions_filtered.append(nearest_position_high_proba)         
         
     def main_filter(self, cum_distance):
+        '''
+        Top-level function for the filtering.
+        Called for every new frame of est data.
+        '''
         
         # Increment the estimated position
         self.idx_est += 1
@@ -531,19 +567,15 @@ class Matcher():
         
         # Load the .wav file and turn into chromagram.
         if chromagram_act is None:
-            chromagram_act = self.get_chromagram(wd, filename)  
+            chromagram_act = self.get_chromagram(wd, filename)
+            
+        # Keep the number of frames of the act features
+        self.nb_obs_feature_act = chromagram_act.shape[0]   
 
-        self.positions_sec = []
+        # Place-holders for the position
         self.position_tick = 0
-        self.best_distance = []        
-        
-        # Set the random distance threshold, for the position filtering.
-        # Make sure to update if we change the distance. 
-        self.random_distance_threshold = utils.calc_mean_random_distance(chromagram_act)
-        self.position_filtered = -1
-        self.positions_filtered = []
-        self.positions_sec_filtered = []
-        self.position_tick_filtered = 0          
+        self.positions_sec = []
+        self.positions = []
         
         # Initialise the DTW engine
         self.dtw = dtw_fcn(chromagram_act, **dtw_kwargs)
@@ -723,8 +755,7 @@ class Matcher():
         times_cor_est = np.flip(best_path[:,1], 0) * self.hop_length / float(self.sr)
                             
         return(times_cor_est, times_ori_est, {'cum_distance':cum_distance, 'best_path':best_path}) 
-                                        
-                                                        
+                                                                                                
     def match_online(self, new_audio_data_est):
         '''
         Run the online matching procedure for a chunk of audio data.
@@ -751,9 +782,12 @@ class Matcher():
             
             self.filter.main_filter(self.dtw.cum_distance)
             
-            self.positions_sec.append(self.filter.positions_filtered[-1] * self.hop_length / float(self.sr))
-#             self.positions_sec.append(self.filter.positions_base[-1] * self.hop_length / float(self.sr))
+            # Propagate the best estimate of the position to the matcher itself,
+            # and convert to seconds
+            self.positions.append(self.filter.positions_base[-1])            
+            self.positions_sec.append(self.positions[-1] * self.hop_length / float(self.sr))
             
-            # Only possible if the input file was a '.mid' in the first place
+            # If the input file was a '.mid' in the first place, convert the 
+            # position to ticks
             if self.file_extension == '.mid':
                 self.position_tick = self.midi_obj.time_to_tick(self.positions_sec[-1])   
