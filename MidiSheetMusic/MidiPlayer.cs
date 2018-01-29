@@ -88,18 +88,17 @@ public class MidiPlayer : Panel  {
     Process timidity;           /** The Linux timidity process */
     
     ///////////////////////////////////////////////////////////////////
-    private TextBox textBox;
-    Timer timerScoreFollowing;  
+    public TextBox textBox;
+    public Timer timerScoreFollowing;  
     int scoreFollowingState;
     private Button scoreFollowingButton;
-    Process python;
+    //Process python;
     private ZContext context;
     private ZSocket subscriber;
-    private ZSocket requester;
+    private ZSocket publisher;
     private int currentPulseTimeScoreFollowing;
     private int prevPulseTimeScoreFollowing;
     TimeSpan startTimeScoreFollowing;
-    bool timeDisplayed;
 
     ///////////////////////////////////////////////////////////////////
 
@@ -144,8 +143,7 @@ public class MidiPlayer : Panel  {
         this.options = null;
         this.sheet = null;
         playstate = stopped;
-        scoreFollowingState = stopped;
-        timeDisplayed = false;
+        scoreFollowingState = stopped;        
         startTime = DateTime.Now.TimeOfDay;        
         startPulseTime = 0;
         currentPulseTime = 0;
@@ -285,14 +283,29 @@ public class MidiPlayer : Panel  {
         timer.Tick += new EventHandler(TimerCallback);
 
         tempSoundFile = "";
+        
+        ///////////////////////////////////////////////////////////////////
 
         /* Initialize the timer used for score following */
         timerScoreFollowing = new Timer();
         timerScoreFollowing.Enabled = false;
-        timerScoreFollowing.Interval = 100;  
+        // Need to run at a higher frquency than the backend (otherwise, 
+        // we may not capute teh instructions).
+        timerScoreFollowing.Interval = 50;  
         timerScoreFollowing.Tick += new EventHandler(TimerCallbackScoreFollowing);
 
-        tempSoundFile = "";
+        // Create the ZQM sockets, open the TCP ports
+        context = new ZContext();
+        subscriber = new ZSocket(context, ZSocketType.SUB);  
+        subscriber.Subscribe("");   
+        subscriber.Conflate = true; // Keep only the last message
+        subscriber.Connect("tcp://127.0.0.1:5555");            
+
+        publisher = new ZSocket(context, ZSocketType.PUB);
+        publisher.Bind("tcp://127.0.0.1:5556");                        
+
+        ///////////////////////////////////////////////////////////////////
+
     }
 
     public void SetPiano(Piano p) {
@@ -778,12 +791,7 @@ public class MidiPlayer : Panel  {
      */
     private void StartStopScoreFollowing(object sender, EventArgs evt)
     {        
-        //textBox.Text = scoreFollowingState.ToString();
         if (midifile == null || sheet == null /*|| numberTracks() == 0*/) {
-            //bool midiNull = midifile == null;
-            //bool sheetNull = sheet == null;
-            //bool trackNull = numberTracks() == 0;//
-            //textBox.Text = midiNull.ToString() + sheetNull.ToString() + trackNull.ToString();
             return;
         }
         else if (scoreFollowingState == playing) {
@@ -794,33 +802,6 @@ public class MidiPlayer : Panel  {
 
             // Record the time at which we preeesed the button
             startTimeScoreFollowing = DateTime.Now.TimeOfDay;
-
-            //// Create the python process to run the python code and start it
-            //string filenamePythonScript = "C:/Users/Alexis/Source/TestPython2/AutomaticAudioTranscript/start_score_following.py";// useless_script
-            //ProcessStartInfo info = new ProcessStartInfo();
-            ////info.CreateNoWindow = true;
-            ////info.RedirectStandardOutput = true;
-            ////info.RedirectStandardInput = true;  
-            //info.UseShellExecute = false;
-            //info.FileName = "python64.exe";
-            //info.Arguments = filenamePythonScript + " " + midifile.FileName;
-            //python = new Process();
-            //python.StartInfo = info;
-            //python.Start();            
-
-            // Create the ZQM socket, open the TCP port and start listening
-            context = new ZContext();
-            subscriber = new ZSocket(context, ZSocketType.SUB);
-            subscriber.Connect("tcp://127.0.0.1:5555");
-            subscriber.Subscribe("");
-
-            requester = new ZSocket(context, ZSocketType.REQ);
-            requester.Connect("tcp://127.0.0.1:5556");
-            requester.Send(new ZFrame("start"));
-            using (ZFrame reply = requester.ReceiveFrame())
-            {
-                string strStartReceived = reply.ReadString();
-            }
 
             // Change status to play mode
             scoreFollowingButton.Image = stopImage;
@@ -835,57 +816,67 @@ public class MidiPlayer : Panel  {
     */     
     void TimerCallbackScoreFollowing(object sender, EventArgs args) {  
         
+        // First, check if there is anything initialised
         if (midifile == null || sheet == null) {
             timerScoreFollowing.Stop();
             scoreFollowingState = stopped;
             return;
         }
+        // Check if we need to stop. We may stop for two reasons:
+        // - the user has pressed stop.
+        // - the backend has sent a stop instruction (e.g. end of track reached).
         else if (scoreFollowingState == initStop) {
             timerScoreFollowing.Stop();            
             scoreFollowingState = stopped;
-            scoreFollowingButton.Image = playImage;
-            timeDisplayed = false;
-
-            requester.Send(new ZFrame("reinit"));
-            using (ZFrame reply = requester.ReceiveFrame())
-            {
-                string strStartReceived = reply.ReadString();
-            }
-
-            python.Kill();
-            python.Dispose();
-            
-            subscriber.Dispose();
-            requester.Dispose();
-            context.Dispose();
-
+            scoreFollowingButton.Image = playImage;            
+            publisher.Send(new ZFrame("stop"));
             sheet.Invalidate();
             piano.Invalidate();
             return;
         }
 
+        // Otherwise, we assume we can run normally
+        publisher.Send(new ZFrame("start"));
+        
+        // Get the reply
+        string reply;
+        Int32 replyInt;
         using (var replyFrame = subscriber.ReceiveFrame())
         {
-            // Check how much time it took to get there           
-            if (timeDisplayed == false)
-            {
-                TimeSpan diff = DateTime.Now.TimeOfDay.Subtract(startTimeScoreFollowing);
-                textBox.Text = diff.TotalMilliseconds.ToString();
-                timeDisplayed = true;
-            }
-            string reply = replyFrame.ReadString();
-
+            reply = replyFrame.ReadString();        
+        }
+        textBox.Text = reply;
+        
+        // Try parsing the reply to see if it is a string or Int32
+        bool isInt = Int32.TryParse(reply, out replyInt);
+        
+        // If Int32, then it is the current position
+        if (isInt){ 
             prevPulseTimeScoreFollowing = currentPulseTimeScoreFollowing;
-            currentPulseTimeScoreFollowing = Int32.Parse(reply);
+            currentPulseTimeScoreFollowing = replyInt;            
 
             sheet.ShadeNotes((int)currentPulseTimeScoreFollowing, (int)prevPulseTimeScoreFollowing, true);
         }
+        // Otherwise it must be an instruction.
+        else
+        {
+            if (reply == "stop")
+            {
+                scoreFollowingState = initStop;
+            }
+            else{ 
+                throw new System.ArgumentException(string.Concat("Unexpected reply in the socket: ", reply));
+            }
+        }
+    }
+    
+    /* Dispose the ZMQ sockets */
+    public void DisposeSockets(){
+        subscriber.Dispose();
+        publisher.Dispose();
+        context.Dispose();
     }
 
-    public void SetPythonProcess(Process pythonIn)
-    {
-        python = pythonIn;
-    }
 }
 
 }
