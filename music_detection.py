@@ -223,7 +223,7 @@ def get_random_dataset(df):
     # Fix the seed for now
     np.random.seed(1)  
      
-    # Total number of sample and the breakdown of the edsired samples
+    # Total number of sample and the breakdown of the desired samples
     nb_sample_tot = 5000
  
     dataset_distribution = [
@@ -291,14 +291,19 @@ def audio_data_features_all(wd, df_info, sr, nb_sample, config_features):
     filename_wav = []
     segment_nb = []
     idx = 0  
-#     print "Extracting samples features for MLP calibration"  
+    print("Extracting samples features for MLP calibration")  
     for _, row in df_info.iterrows():
         idx += 1
-        print "{}/{} done \r".format(idx, len(df_info)) 
+        print("{}/{} done \r".format(idx, len(df_info))) 
         
         if row["valid"]:
             if isfile(row["filename_wav"]):           
                 audio_data_wav = lb.core.load(row["filename_wav"], sr = sr, dtype=utils.AUDIO_FORMAT_MAP[utils.AUDIO_FORMAT_DEFAULT][0])[0]
+                
+                # Trim the leading silence if we expect music
+                if row['classification'] > 0:
+                    first_valid = np.where(audio_data_wav > 0.05)[0]
+                    audio_data_wav = audio_data_wav[first_valid[0]:len(audio_data_wav)] if len(first_valid) else np.zeros([0]) 
                 
                 for k in np.arange(0, len(audio_data_wav)-nb_sample, nb_sample):
                     audio_data_wav_tmp = audio_data_wav[k:k+nb_sample]
@@ -312,7 +317,7 @@ def audio_data_features_all(wd, df_info, sr, nb_sample, config_features):
             else:
                 # All the files with row["valid"] = True should be there, 
                 # print if this is not he case
-                print "File {} is missing".format(row["filename_wav"])
+                print("File {} is missing".format(row["filename_wav"]))
 
     classification = np.array(classification)
     features = np.vstack(features)
@@ -383,7 +388,7 @@ def main_build_model(wd, sr, nb_sample, config_features):
          
     filename_df_random_audioset = wd + FILENAME_INFO    
     df_random_audioset = pd.read_pickle(filename_df_random_audioset)
-#     df_random_audioset = df_random_audioset.loc[np.random.randint(0, high=len(df_random_audioset), size=4500)]
+    df_random_audioset = df_random_audioset.loc[np.random.randint(0, high=len(df_random_audioset), size=50)]
     
     # Extract the features and the classifications, using the 
     # Youtube samples stored on the disk 
@@ -466,7 +471,7 @@ def check_is_silence(y, threshold=-50, func=np.max):
 
 def spectral_flux(y, S, sr, n_fft, hop_length):
     '''
-    Calculate the specrtal flux as an alternative feature
+    Calculate the spectral flux as an alternative feature
     '''
     # Normalise the power spectrum with L2 (only if S != 0)     
     divisor = np.linalg.norm(S, ord=2, axis=0)
