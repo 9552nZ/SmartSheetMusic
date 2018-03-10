@@ -17,11 +17,10 @@ from time import sleep
 import utils_audio_transcript as utils
 from score_following import Matcher
 from music_detection import MusicDetecter
-from librosa.feature import chroma_cqt, chroma_stft
 from pandas import DataFrame
 import os # REMOVE
 import datetime # REMOVE
-import subprocess # REMOVE
+import multiprocessing # REMOVE
 
 # Flag for the communication with the GUI
 # TODO : Replace by integers
@@ -45,9 +44,12 @@ class MatcherManager():
         self.chunk = int(16384/16) # The chunk of data processed per pyaudio batch        
         self.sr = utils.SR # Sample rate
         self.hop_length = utils.HOP_LENGTH 
-        self.audio_format = utils.AUDIO_FORMAT_DEFAULT # The low-level audio format
+        self.audio_format = utils.AUDIO_FORMAT_DEFAULT # The low-level audio format 
         self.detect_music = False # Set to true to only start once the MLP has detected music
         self.callback_fcn = callback_fcn # The pyaudio callback function  
+        
+        # Start the publishing socket
+        self.bind_sockets()
          
         # Split the path of the midi input between the directory and file name.
         (wd, self.filename) = os.path.split(filename_mid_full)
@@ -59,14 +61,13 @@ class MatcherManager():
         
         # Initialise the audio data buffer
         self.audio_data = np.array([])
+        
+        self.audio_data2 = np.array([]) # REMOVE
      
         # Initialise the music detecter
         self.music_detection_diagnostic = ''
         if self.detect_music:
-            self.music_detecter = MusicDetecter(utils.WD_AUDIOSET + "VerifiedDataset\\VerifiedDatasetRecorded\\", self.sr)
-        
-        # Start the publishing socket
-        self.bind_sockets()
+            self.music_detecter = MusicDetecter(utils.WD_AUDIOSET + "VerifiedDataset\\VerifiedDatasetRecorded\\", self.sr)    
         
         # Start the pyaudio stream 
         self.start_stream()
@@ -106,7 +107,8 @@ class MatcherManager():
         '''
         context = zmq.Context()
         self.socket_pub = context.socket(zmq.PUB)
-        self.socket_pub.bind("tcp://*:5555")
+#         self.socket_pub.bind("tcp://*:5555")
+        self.socket_pub.bind("tcp://127.0.0.1:5555")
         self.socket_sub = context.socket(zmq.SUB)
         
         # Need to use different options for python3 vs python2
@@ -115,7 +117,7 @@ class MatcherManager():
         else:
             self.socket_sub.setsockopt_string(zmq.SUBSCRIBE, r'')            
         
-        self.socket_sub.connect("tcp://localhost:5556")
+        self.socket_sub.connect("tcp://127.0.0.1:5556")
         
     def start_stream(self):
         '''
@@ -165,12 +167,16 @@ class MatcherManager():
         ''' 
         # Start by converting the input string to numpy array
         new_audio_data = np.fromstring(new_audio_data, dtype=utils.AUDIO_FORMAT_MAP[self.audio_format][0])
+#         new_audio_data = new_audio_data.astype('float32') #REMOVE
         
         # Keep a local buffer (we keep as many samples as the music detection procedure requires)
         # TODO : move to update_status_matcher()
         if self.detect_music:
             self.audio_data = np.append(self.audio_data, new_audio_data)        
-            self.audio_data = self.audio_data[max(len(self.audio_data)-self.music_detecter.mlp.nb_sample, 0):len(self.audio_data)]
+            self.audio_data = self.audio_data[max(len(self.audio_data)-self.music_detecter.model.nb_sample, 0):len(self.audio_data)]
+            
+        # REMOVE!!!
+        self.audio_data2 = np.append(self.audio_data2, new_audio_data)
         
         # Check the status
         self.update_status_matcher()
@@ -194,6 +200,7 @@ class MatcherManager():
             self.socket_pub.send(bytes(self.matcher.position_tick))
         else:                               
             self.socket_pub.send_string(str(self.matcher.position_tick))
+            print(str(self.matcher.position_tick))
                 
     def save(self):
         '''
@@ -274,10 +281,10 @@ if __name__ == '__main__':
         sleep(matcher_manager.chunk/float(matcher_manager.sr))
         t2 = datetime.datetime.now()
         
-#         if (t2-t1).total_seconds() > 2.0:            
+#         if (t2-t1).total_seconds() > 10.0:            
 #             break
                 
     matcher_manager.stream.stop_stream()
     matcher_manager.stream.close()    
-    
+    #np.save(r"C:\Users\Alexis\Business\SmartSheetMusic//live.npy", matcher_manager.audio_data2)
     a=1    
