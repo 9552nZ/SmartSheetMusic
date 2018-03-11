@@ -92,7 +92,13 @@ namespace SeeScoreWin
             // we may not capture the instructions).
             timerScoreFollowing.Interval = 50;  
             timerScoreFollowing.Tick += new EventHandler(TimerCallbackScoreFollowing);
-            scoreFollowingState = stopped;  
+            scoreFollowingState = stopped; 
+            
+            // Create the ZMQ sockets, open the TCP ports.
+            // Publisher only here
+            context = new ZContext();          
+            publisher = new ZSocket(context, ZSocketType.PUB);
+            publisher.Bind("tcp://127.0.0.1:5556");       
         }
 
         private async void ReadFileAsync(string filename) // asynchronous file read
@@ -634,181 +640,7 @@ namespace SeeScoreWin
             seeScoreView.SetIgnoreXMLLayout(((CheckBox)sender).Checked);
         }
 
-        private void InitialiseScoreFollower(string filename)
-        {        
-            // Create the python process to run the python code and start it
-            string filenamePythonScript = "C:/Users/Alexis/Source/TestPython2/AutomaticAudioTranscript/start_score_following.py";
-            ProcessStartInfo info = new ProcessStartInfo();
-            info.RedirectStandardError = true;
-            info.UseShellExecute = false;
-            info.FileName = "python3.exe";
-            // We make sure the paths can handle spaces
-            info.Arguments = "\"" + filenamePythonScript + "\"" + " " + "\"" + filename + "\"";
-            python = new Process();
-            python.StartInfo = info;        
-            python.EnableRaisingEvents = true;
-            python.Exited += new EventHandler(pythonProcess_Exited);
-            python.Start();
-
-            // Handle Exited event and display process information.
-            void pythonProcess_Exited(object sender, System.EventArgs e)
-            {   
-                // Need to stop the score following timer, otherwise the window freezes when the python process is exited
-                //player.timerScoreFollowing.Stop(); 
-                MessageBox.Show(python.StandardError.ReadToEnd(), "Error in the python process",MessageBoxButtons.OK, MessageBoxIcon.Error);                                
-            };
-            
-        } 
-
-        /* The callback for the score follower. */            
-        void TimerCallbackScoreFollowing(object sender, EventArgs args) {              
-        
-            // Check if we need to stop. We may stop for two reasons:
-            // - the user has pressed stop.
-            // - the backend has sent a stop instruction (e.g. end of track reached).
-            if (scoreFollowingState == initStop) {
-                timerScoreFollowing.Stop();            
-                scoreFollowingState = stopped;
-                // TODO : CHANGE THE TEXT        
-                publisher.Send(new ZFrame("stop"));
-                return;
-            }
-
-            // Otherwise, we assume we can run normally
-            publisher.Send(new ZFrame("start"));
-            
-            // Get the reply
-            string reply;
-            Int32 replyInt;
-            Console.WriteLine("blop");
-           
-            //using (var replyFrame = subscriber.ReceiveBytes())
-            //{                
-            //    reply = replyFrame.ReadString();
-            //    Console.WriteLine("pub");
-            //}            
-            using (var replyFrame = subscriber.ReceiveFrame())
-            {   
-                reply = "100";
-            }   
-            
-            // Try parsing the reply to see if it is a string or Int32
-            bool isInt = Int32.TryParse(reply, out replyInt);
-        
-            // If Int32, then it is the current position
-            if (isInt){ 
-                // Based on the estimated position in ms, find the closest note
-                notesTimesMap = 
-            }
-            // Otherwise it must be an instruction.
-            else
-            {
-                if (reply == "stop")
-                {
-                    scoreFollowingState = initStop;
-                }
-                else{ 
-                    throw new System.ArgumentException(string.Concat("Unexpected reply in the socket: ", reply));
-                }
-            }
-        }
-
-        private Note FindClosestNote(int estPos)
-        {
-            if (notesTimesMap.Count == 0)
-            {
-                throw new System.ArgumentOutOfRangeException("The note <-> time map is empty");
-            }
-
-            // We assume that the map is properly sorted
-            int idxClosestNote = -1;
-            
-            // Return the first note if we are before.
-            if (estPos <= notesTimesMap[0].noteTime)
-            {
-                idxClosestNote = 0;
-            }
-            // Return the last note if we are after
-            else if (estPos >= notesTimesMap[notesTimesMap.Count - 1].noteTime)            
-            {
-                idxClosestNote = notesTimesMap.Count - 1;
-            }
-            else
-            {
-                // Find the first note with a time greater than the estimated 
-                // position and return the one just before.
-                for (int k=1; k<notesTimesMap.Count; k++)
-                {                    
-                    if (estPos <= notesTimesMap[k].noteTime)
-                    {
-                        idxClosestNote = k - 1;
-                    }
-                }                
-            }
-
-            if (idxClosestNote == -1)
-            {
-                throw new System.ArgumentNullException("Index not assigned, we should not have gotten here");
-            }
-
-            return(notesTimesMap[idxClosestNote].note);
-
-        }
-
-        protected override void OnFormClosing(FormClosingEventArgs e)
-        {
-            /* Dispose the Python subprocess*/
-            if ((python != null) && (!python.HasExited)){
-                python.Kill();
-                python.Dispose();
-            };
-            
-            /* Dispose the ZMQ sockets */
-            subscriber.Dispose();
-            publisher.Dispose();
-            context.Dispose();
-        }
-        
-        private void ScoreFollowingButton_Click(object sender, EventArgs e)
-        {            
-            if (score == null) {
-                return;
-            }
-            else if (scoreFollowingState == playing) {
-                scoreFollowingState = initStop;
-                scoreFollowingButton.Text = "Follow";
-                return;
-            }
-            else if (scoreFollowingState == stopped) {
-
-                SetNotesTimesMap(); // TODO : dispose afterward !!
-
-                // Change status to play mode
-                scoreFollowingButton.Text = "Stop";
-                scoreFollowingState = playing;
-
-                // Create the ZMQ sockets, open the TCP ports.
-                // This is done here as it seems that the python publisher 
-                // should have binded before the C# subscriber connects.
-                // If the below is ran when the app initialises, the subscriber
-                // never receives anything.
-                context = new ZContext();          
-
-                publisher = new ZSocket(context, ZSocketType.PUB);
-                publisher.Bind("tcp://127.0.0.1:5556");       
-
-                subscriber = new ZSocket(context, ZSocketType.SUB);  
-                subscriber.Subscribe("");               
-                subscriber.Conflate = true; // Keep only the last message
-                subscriber.Connect("tcp://127.0.0.1:5555");  
-            
-                // Start the timer
-                timerScoreFollowing.Start();
-            }
-
-        }
-
-        private void SetNotesTimesMap()
+                private void SetNotesTimesMap()
         {
             GetMIDIPlayData();
             IBarEnumerator m_current_bar_iter = midiPlayData_cache.GetBarEnumerator(); 
@@ -917,6 +749,198 @@ namespace SeeScoreWin
             
             return((int) barIdxToDuration[idx]);
         }
+        
+        private Note FindClosestNote(int estPos)
+        {
+            if (notesTimesMap.Count == 0)
+            {
+                throw new System.ArgumentOutOfRangeException("The note <-> time map is empty");
+            }
+
+            // We assume that the map is properly sorted
+            int idxClosestNote = -1;
+            
+            // Return the first note if we are before.
+            if (estPos <= notesTimesMap[0].noteTime)
+            {
+                idxClosestNote = 0;
+            }
+            // Return the last note if we are after
+            else if (estPos >= notesTimesMap[notesTimesMap.Count - 1].noteTime)            
+            {
+                idxClosestNote = notesTimesMap.Count - 1;
+            }
+            else
+            {
+                // Find the first note with a time greater than the estimated 
+                // position and return the one just before.
+                for (int k=1; k<notesTimesMap.Count; k++)
+                {                    
+                    if (estPos <= notesTimesMap[k].noteTime)
+                    {
+                        idxClosestNote = k - 1;
+                        break;
+                    }
+                }                
+            }
+
+            if (idxClosestNote == -1)
+            {
+                throw new System.ArgumentNullException("Index not assigned, we should not have gotten here");
+            }
+
+            return(notesTimesMap[idxClosestNote].note);
+
+        }
+
+        protected override void OnFormClosing(FormClosingEventArgs e)
+        {
+            /* Dispose the Python subprocess*/
+            if ((python != null) && (!python.HasExited)){
+                python.Kill();
+                python.Dispose();
+            };
+            
+            /* Dispose the ZMQ sockets */
+            subscriber.Dispose();
+            publisher.Dispose();
+            context.Dispose();
+        }
+
+        private void InitialiseScoreFollower(string filename)
+        {        
+            // Create the python process to run the python code and start it
+            string filenamePythonScript = "C:/Users/Alexis/Source/TestPython2/AutomaticAudioTranscript/start_score_following.py";
+            ProcessStartInfo info = new ProcessStartInfo();
+            info.RedirectStandardError = true;
+            info.UseShellExecute = false;
+            info.FileName = "python3.exe";
+            // We make sure the paths can handle spaces
+            info.Arguments = "\"" + filenamePythonScript + "\"" + " " + "\"" + filename + "\"";
+            python = new Process();
+            python.StartInfo = info;        
+            python.EnableRaisingEvents = true;
+            python.Exited += new EventHandler(pythonProcess_Exited);
+            python.Start();
+
+            // Handle Exited event and display process information.
+            void pythonProcess_Exited(object sender, System.EventArgs e)
+            {   
+                // Need to stop the score following timer, otherwise the window freezes when the python process is exited
+                //player.timerScoreFollowing.Stop(); 
+                MessageBox.Show(python.StandardError.ReadToEnd(), "Error in the python process",MessageBoxButtons.OK, MessageBoxIcon.Error);                                
+            };
+
+            using (var context2 = new ZContext())
+            using (var responder = new ZSocket(context, ZSocketType.REP))
+            {
+                responder.Bind("tcp://127.0.0.1:5557");
+                using (ZFrame request = responder.ReceiveFrame())
+                {
+                    request.ReadString();
+
+                    // Do some work
+                    Thread.Sleep(1);
+
+                    // Send
+                    responder.Send(new ZFrame("Word"));
+                }                
+            }
+        } 
+
+        /* The callback for the score follower. */            
+        void TimerCallbackScoreFollowing(object sender, EventArgs args) {              
+        
+            // Check if we need to stop. We may stop for two reasons:
+            // - the user has pressed stop.
+            // - the backend has sent a stop instruction (e.g. end of track reached).
+            if (scoreFollowingState == initStop) {
+                // Stop the timer
+                timerScoreFollowing.Stop();            
+                scoreFollowingState = stopped;                
+
+                // Send stop instruction to backend
+                publisher.Send(new ZFrame("stop"));
+
+                // Hide the cursor
+                this.seeScoreView.HideCursor();
+                return;
+            }
+
+            // Otherwise, we assume we can run normally
+            publisher.Send(new ZFrame("start"));
+            
+            // Get the reply
+            string reply;
+            Int32 replyInt;
+            using (var replyFrame = subscriber.ReceiveFrame())
+            {   
+                reply = replyFrame.ReadString();
+            }   
+            
+            // Try parsing the reply to see if it is a string or Int32
+            bool isInt = Int32.TryParse(reply, out replyInt);
+        
+            // If Int32, then it is the current position
+            if (isInt){                 
+                // Based on the estimated position in ms, find the closest note
+                Note closestNote = FindClosestNote(replyInt);
+
+                float xpos = this.seeScoreView.NoteXPos(closestNote);
+			    if (xpos > 0) // noteXPos returns 0 if the note isn't found in the layout (it might be in a part which is not shown)
+			    {
+                    this.seeScoreView.ShowCursorAtXpos(xpos, closestNote.startBarIndex, SeeScore.ScrollType.Bar);
+				    return; // abandon iteration
+			    }
+                
+            }
+            // Otherwise it must be an instruction.
+            else
+            {
+                if (reply == "stop")
+                {
+                    scoreFollowingState = initStop;
+                }
+                else{ 
+                    throw new System.ArgumentException(string.Concat("Unexpected reply in the socket: ", reply));
+                }
+            }
+        }
+        
+        private void ScoreFollowingButton_Click(object sender, EventArgs e)
+        {            
+            if (score == null) {
+                return;
+            }
+            else if (scoreFollowingState == playing) {
+                scoreFollowingState = initStop;
+                scoreFollowingButton.Text = "Follow";
+                return;
+            }
+            else if (scoreFollowingState == stopped) {
+
+                SetNotesTimesMap(); // TODO : dispose afterward !!
+
+                // Change status to play mode
+                scoreFollowingButton.Text = "Stop";
+                scoreFollowingState = playing;
+                
+                // Connect the subscriber
+                // This is done here as it seems that the python publisher 
+                // should have binded before the C# subscriber connects.                
+                // In theory the connection order should not matter, but there
+                // seems to be a ZMQ bug.               
+                subscriber = new ZSocket(context, ZSocketType.SUB);  
+                subscriber.Subscribe("");               
+                subscriber.Conflate = true; // Keep only the last message
+                subscriber.Connect("tcp://127.0.0.1:5555");  
+            
+                // Start the timer
+                timerScoreFollowing.Start();
+            }
+
+        }
+
 
     }
 }
