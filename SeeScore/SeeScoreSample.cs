@@ -62,6 +62,7 @@ namespace SeeScoreWin
         private ZContext context;
         private ZSocket subscriber;
         private ZSocket publisher;
+        private ZSocket responder_init;
 
         const int stopped   = 1;     /** Currently stopped */
         const int playing   = 2;     /** Currently playing music */
@@ -71,6 +72,8 @@ namespace SeeScoreWin
 
         private ArrayList barIdxToDuration = new ArrayList();
         private List<NoteWithTime> notesTimesMap;
+
+        private Stopwatch watch; // TODO: REMOVE        
 
         /// <summary>
         /// construct
@@ -99,6 +102,10 @@ namespace SeeScoreWin
             context = new ZContext();          
             publisher = new ZSocket(context, ZSocketType.PUB);
             publisher.Bind("tcp://127.0.0.1:5556");       
+                        
+            responder_init = new ZSocket(context, ZSocketType.REP);
+            responder_init.Bind("tcp://127.0.0.1:5557");
+
         }
 
         private async void ReadFileAsync(string filename) // asynchronous file read
@@ -199,14 +206,7 @@ namespace SeeScoreWin
         private void LoadData(byte[] data)
         {
             try
-            {
-
-                // create MIDI file for playing
-                midiFileName = loadedFile.Substring(0, openFileDialog1.FileName.Length - 4) + ".mid";
-
-                // Initialise the score follower
-                InitialiseScoreFollower(midiFileName);
-
+            {       
                 seeScoreView.ClearAwaitLayoutCompletion();// careful to await termination of layout thread if mid-layout
                 if (score != null)
                 {
@@ -229,6 +229,13 @@ namespace SeeScoreWin
                 seeScoreView.SetScore(score, new AppNotifierImpl(this));
                 midiPlayData_cache = null;
                 this.zoomSlider.Value = 100;
+
+                // Create MIDI file for playing
+                midiFileName = loadedFile.Substring(0, openFileDialog1.FileName.Length - 4) + ".mid";                        
+                GetMIDIFile();
+
+                // Initialise the score follower
+                InitialiseScoreFollower(midiFileName);
             }
             catch (SeeScore.LoadException ex)
             {
@@ -640,11 +647,12 @@ namespace SeeScoreWin
             seeScoreView.SetIgnoreXMLLayout(((CheckBox)sender).Checked);
         }
 
-                private void SetNotesTimesMap()
+        private void SetNotesTimesMap()
         {
             GetMIDIPlayData();
             IBarEnumerator m_current_bar_iter = midiPlayData_cache.GetBarEnumerator(); 
             List<NoteWithTime> notes = new List<NoteWithTime>();
+            int cumBarDuration = 0;
             while (!m_current_bar_iter.IsLast())
             {
                 m_current_bar_iter.MoveNext();
@@ -658,9 +666,11 @@ namespace SeeScoreWin
                 IPart part = bar.Part(0);
                 foreach (Note note in part)
                 {
-                    int noteTime = note.start + GetBarIdxToDuration(note.startBarIndex);
+                    Console.WriteLine(note.startBarIndex.ToString());
+                    int noteTime = note.start + cumBarDuration;
                     notes.Add(new NoteWithTime(note, noteTime));                    
                 }
+                cumBarDuration = cumBarDuration + bar.Duration();
             }
 
             // sort in order of time
@@ -671,10 +681,11 @@ namespace SeeScoreWin
             uniqueNotesTimes.Add(notes[0]);
             for (int k = 1; k < notes.Count; k++)
             {
-                if (notes[k].noteTime != uniqueNotesTimes[uniqueNotesTimes.Count - 1].noteTime)
-                {
-                    uniqueNotesTimes.Add(notes[k]);                    
-                }
+                //if (notes[k].noteTime != uniqueNotesTimes[uniqueNotesTimes.Count - 1].noteTime)
+                //{
+                //    uniqueNotesTimes.Add(notes[k]);
+                //}
+                uniqueNotesTimes.Add(notes[k]);
             }
 
             // TODO : remove negative times?
@@ -698,56 +709,6 @@ namespace SeeScoreWin
             {
                 return n1.noteTime < n2.noteTime ? -1 : n1.noteTime == n2.noteTime ? 0 : +1;
             }
-        }
-        
-        private int GetBarIdxToDuration(int idx)
-        {
-            // TODO : dispose barIdxToDuration if a new .xml is opened
-            // Create the mapping (idx) <-> cum duration if it does not exist
-            if (barIdxToDuration.Count == 0)
-            {
-                // Get the bar enumerator and gather the bar indices and durations
-                GetMIDIPlayData();
-                IBarEnumerator m_current_bar_iter = midiPlayData_cache.GetBarEnumerator(); 
-                ArrayList barsDurations = new ArrayList();
-                ArrayList barsIndices = new ArrayList();
-                while (!m_current_bar_iter.IsLast())
-                {
-                    m_current_bar_iter.MoveNext();
-                    IBar bar = m_current_bar_iter.CurrentBar();
-                    barsDurations.Add(bar.Duration());
-                    barsIndices.Add(bar.Index());
-                };
-            
-                // Remove duplicates (unique bar indices and durations)
-                int nbNotes = barsIndices.Count;
-                ArrayList uniqueBarsDurations = new ArrayList();
-                ArrayList uniqueBarsIndices = new ArrayList();            
-                uniqueBarsIndices.Add(barsIndices[0]);
-                uniqueBarsDurations.Add(barsDurations[0]);
-                for (int k = 1; k < nbNotes; k++)
-                {
-                    if (barsIndices[k] != uniqueBarsIndices[uniqueBarsIndices.Count - 1])
-                    {
-                        uniqueBarsIndices.Add(barsIndices[k]);
-                        uniqueBarsDurations.Add(barsDurations[k]);
-                    }
-                }
-
-                // Compute the cum duration
-                barIdxToDuration.Add(0);
-                for (int k = 1; k < uniqueBarsIndices.Count; k++)
-                {
-                    barIdxToDuration.Add((int) barIdxToDuration[k-1] + (int) uniqueBarsDurations[k-1]);
-                }                
-            }
-            
-            if (idx >= barIdxToDuration.Count)
-            {
-                throw new System.ArgumentException("Target bar index is outside the possible range");
-            }
-            
-            return((int) barIdxToDuration[idx]);
         }
         
         private Note FindClosestNote(int estPos)
@@ -831,21 +792,15 @@ namespace SeeScoreWin
                 MessageBox.Show(python.StandardError.ReadToEnd(), "Error in the python process",MessageBoxButtons.OK, MessageBoxIcon.Error);                                
             };
 
-            using (var context2 = new ZContext())
-            using (var responder = new ZSocket(context, ZSocketType.REP))
+            // Block until we have received a request from the back-end 
+            // (it takes a few secs to initialise and we don't want to do 
+            // anything in the meantime).
+            using (ZFrame request = responder_init.ReceiveFrame())
             {
-                responder.Bind("tcp://127.0.0.1:5557");
-                using (ZFrame request = responder.ReceiveFrame())
-                {
-                    request.ReadString();
-
-                    // Do some work
-                    Thread.Sleep(1);
-
-                    // Send
-                    responder.Send(new ZFrame("Word"));
-                }                
+                request.ReadString();
             }
+            // REMOVE
+            watch = Stopwatch.StartNew();
         } 
 
         /* The callback for the score follower. */            
@@ -872,11 +827,12 @@ namespace SeeScoreWin
             
             // Get the reply
             string reply;
-            Int32 replyInt;
+            Int32 replyInt;            
             using (var replyFrame = subscriber.ReceiveFrame())
             {   
                 reply = replyFrame.ReadString();
             }   
+            Console.WriteLine(watch.ElapsedMilliseconds);
             
             // Try parsing the reply to see if it is a string or Int32
             bool isInt = Int32.TryParse(reply, out replyInt);
