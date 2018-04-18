@@ -72,6 +72,8 @@ namespace SeeScoreWin
 
         private ArrayList barIdxToDuration = new ArrayList();
         private List<NoteWithTime> notesTimesMap;
+        private float xpos = 0.0F;
+        private float xposPrevious = 0.0F;
 
         private Stopwatch watch; // TODO: REMOVE        
 
@@ -82,8 +84,7 @@ namespace SeeScoreWin
         {
             InitializeComponent();
             SeeScore.Version version = SeeScore.SS.GetVersion();
-            // ensure .lo has leading zero if < 10
-            versionLabel.Text = "SeeScore v" + version.hi + "." + ((version.lo < 10) ? "0" + version.lo : "" +version.lo);
+            // ensure .lo has leading zero if < 10            
             bpmLabel.Text = "" + kDefaultTempoBPM;
             beatLabel.Hide();
             barControl.SetSSView(seeScoreView);
@@ -93,7 +94,7 @@ namespace SeeScoreWin
             timerScoreFollowing.Enabled = false;
             // Need to run at a higher frquency than the backend (otherwise, 
             // we may not capture the instructions).
-            timerScoreFollowing.Interval = 50;  
+            timerScoreFollowing.Interval = 50;            
             timerScoreFollowing.Tick += new EventHandler(TimerCallbackScoreFollowing);
             scoreFollowingState = stopped; 
             
@@ -666,7 +667,6 @@ namespace SeeScoreWin
                 IPart part = bar.Part(0);
                 foreach (Note note in part)
                 {
-                    Console.WriteLine(note.startBarIndex.ToString());
                     int noteTime = note.start + cumBarDuration;
                     notes.Add(new NoteWithTime(note, noteTime));                    
                 }
@@ -763,9 +763,18 @@ namespace SeeScoreWin
             };
             
             /* Dispose the ZMQ sockets */
-            subscriber.Dispose();
-            publisher.Dispose();
-            context.Dispose();
+            if (subscriber != null)
+            {
+                subscriber.Dispose();
+            }
+            if (publisher != null)
+            {
+                publisher.Dispose();
+            }
+            if (context != null)
+            {
+                context.Dispose();    
+            }            
         }
 
         private void InitialiseScoreFollower(string filename)
@@ -803,7 +812,7 @@ namespace SeeScoreWin
             watch = Stopwatch.StartNew();
         } 
 
-        /* The callback for the score follower. */            
+        /* The callback for the score follower. */          
         void TimerCallbackScoreFollowing(object sender, EventArgs args) {              
         
             // Check if we need to stop. We may stop for two reasons:
@@ -828,28 +837,34 @@ namespace SeeScoreWin
             // Get the reply
             string reply;
             Int32 replyInt;            
+
             using (var replyFrame = subscriber.ReceiveFrame())
             {   
                 reply = replyFrame.ReadString();
-            }   
-            Console.WriteLine(watch.ElapsedMilliseconds);
+            }  
+            textBox1.Text = reply;
             
             // Try parsing the reply to see if it is a string or Int32
             bool isInt = Int32.TryParse(reply, out replyInt);
-        
-            // If Int32, then it is the current position
+            
+            // If Int32, then it is the current position            
             if (isInt){                 
                 // Based on the estimated position in ms, find the closest note
                 Note closestNote = FindClosestNote(replyInt);
 
-                float xpos = this.seeScoreView.NoteXPos(closestNote);
-			    if (xpos > 0) // noteXPos returns 0 if the note isn't found in the layout (it might be in a part which is not shown)
-			    {
-                    this.seeScoreView.ShowCursorAtXpos(xpos, closestNote.startBarIndex, SeeScore.ScrollType.Bar);
-				    return; // abandon iteration
-			    }
-                
-            }
+                xpos = this.seeScoreView.NoteXPos(closestNote);
+                this.seeScoreView.ShowCursorAtXpos(xpos, closestNote.startBarIndex, SeeScore.ScrollType.Bar);
+                /*
+                float xposDiff = xpos - xposPrevious;
+                int nbStep = 10;
+                for (int k = 1; k < nbStep; k++)
+                {
+                    float xposTarget = xposPrevious + (float)k/nbStep * xposDiff;
+                    Console.WriteLine(xposTarget.ToString());
+                    this.seeScoreView.ShowCursorAtXpos(xposTarget, closestNote.startBarIndex, SeeScore.ScrollType.Bar);
+                }*/
+                xposPrevious = xpos;
+            }                             
             // Otherwise it must be an instruction.
             else
             {
@@ -896,7 +911,5 @@ namespace SeeScoreWin
             }
 
         }
-
-
     }
 }
