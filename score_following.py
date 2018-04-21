@@ -417,7 +417,9 @@ class MatcherFilter():
         self.nb_obs_act = nb_obs_act
         
         # Speed is the nb of act frames processed for one est frame
-        self.speed = 1.0               
+        self.speed = 1.0         
+        self.min_speed = 1.0/3.0
+        self.max_speed = 3.0      
         self.nb_frames_speed_estimate = 50
         self.positions_filtered = []
         self.min_frames_position_base = 50
@@ -449,13 +451,16 @@ class MatcherFilter():
         '''
         Estimate the speed at which the live feed is going (relative to the act data).
         We could also rely on tempo estimation techniques.
+        Cap and floor the result.
         '''
         
         if self.idx_est < self.nb_frames_dtw_est + self.nb_frames_speed_estimate:                        
             return                  
         
         speed = np.mean(np.diff(self.positions_filtered_last)) # The mean may not be very robust
-        self.speed = self.alpha_speed_estimate * self.speed + (1-self.alpha_speed_estimate) * speed  
+        self.speed = self.alpha_speed_estimate * self.speed + (1-self.alpha_speed_estimate) * speed
+        
+        self.speed = max(min(self.speed, self.max_speed), self.min_speed)  
         
     def update_position_base(self):
         '''
@@ -538,19 +543,24 @@ class Matcher():
                  compute_chromagram_fcn=lb.feature.chroma_stft,                
                  compute_chromagram_fcn_kwargs={}, 
                  chromagram_mode=0,
-                 chromagram_act=None):
-                         
+                 chromagram_act=None):        
         
-        # Start by fixing the sample rate and hop size for the spectrum
-        # decomposition
+        # Clean the filename
+        filename_clean = os.path.normpath(filename)
+        
+        # Fix the sample rate and hop size for the spectrum decomposition
         self.sr = sr
         self.hop_length = hop_length  
         
         # Initialise the placeholder for the estimated audio data (only the most recent)
         # This is required in the online mode, as we may want to compute the chromagram  
         # with more data that just the last chunk.
-        self.audio_data = np.array([])         
-        self.min_len_sample = utils.calc_nb_sample_stft(self.sr, self.hop_length, 3.0) # Nb of samples to compute the chromagram 
+        self.audio_data = np.array([])                        
+        self.min_len_sample = utils.calc_nb_sample_stft(self.sr, self.hop_length, 3.0) # Nb of samples to compute the chromagram
+        
+        # Initialise another placeholder for audio data. 
+        # Keep all the audio that has been input for alignment (used for offline analysis)
+        self.audio_data_all = np.array([], dtype=np.float32) 
         
         # Set the function used to compute the chromagram and its parameters
         self.compute_chromagram_fcn = compute_chromagram_fcn
@@ -561,13 +571,13 @@ class Matcher():
         self.store_chromagram = False  
         
         # Check whether we have the '.mid' or '.wav' as input.
-        _, self.file_extension = os.path.splitext(filename)        
+        _, self.file_extension = os.path.splitext(filename_clean)        
         if not (self.file_extension == '.mid' or self.file_extension == '.wav'):
-            raise ValueError('Input file need to be either .mid or .wav')
+            raise ValueError('Input file need to be either .mid or .wav. Filename is {} while extension is {}'.format(filename_clean, self.file_extension))
         
         # Load the .wav file and turn into chromagram.
         if chromagram_act is None:
-            chromagram_act = self.get_chromagram(wd, filename)
+            chromagram_act = self.get_chromagram(wd, filename_clean)
             
         # Keep the number of frames of the act features
         self.nb_obs_feature_act = chromagram_act.shape[0]   
@@ -679,7 +689,8 @@ class Matcher():
             raise ValueError('Chunk size need to be a multiple of hop size')
         
         # Append the new data
-        self.audio_data = np.append(self.audio_data, new_audio_data)
+        self.audio_data = np.append(self.audio_data, new_audio_data)        
+        self.audio_data_all = np.append(self.audio_data_all, new_audio_data)
         
         # Trim. There are two possible cases:
         # - we added a lot of data , i.e. len(new_audio_data) > self.min_len_sample: we want to keep all the new added data
@@ -718,7 +729,7 @@ class Matcher():
         nb_obs = len(audio_data_est)
         nb_obs_dropped = nb_obs % self.hop_length    
         audio_data_est = audio_data_est[0:-nb_obs_dropped] if nb_obs_dropped else audio_data_est
-        
+                
         self.match_online(audio_data_est)
         
         # Get the alignment output
