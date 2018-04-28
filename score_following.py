@@ -7,328 +7,6 @@ import matplotlib.pyplot as plt
 from math import floor, ceil
 from scipy.spatial.distance import cdist
 from dtw_fast import dtw_fast
-
-class CellList():    
-    '''
-    Class to handle a triplet (s, w, sw) of cells.
-    Cells are represented as tuples of integers.
-    '''
-    def __init__(self, s=None, w=None, sw=None):
-        '''
-        Fill the triplet.
-        The idx is not None only if the cell actually exists and is non-nan. 
-        '''        
-        self.idxs = [s, w, sw]
-        
-    def get(self, idx, cum_distance):
-        '''
-        Get the cum_distance based on a target step (where we come from).
-        idx = 0 --> s
-        idx = 1 --> w
-        idx = 2 --> sw
-        '''
-        if self.idxs[idx] is None:
-            return(np.nan)        
-        else:
-            return(cum_distance[self.idxs[idx]])
-    
-    def find_best_step(self, cum_distance, cur_cost, diag_cost,alpha=1.0):
-        '''
-        The function computes the local DTW step, adjusting for the diagonal penalty.
-        We can also have either cumulative distance (alpha = 1) or EWMA distance (alpha < 1).        
-        It returns the optimal distance and the optimal step.
-        '''                
-            
-        d = np.array([cur_cost + alpha*self.get(0, cum_distance), 
-                      cur_cost + alpha*self.get(1, cum_distance), 
-                      diag_cost*cur_cost + alpha*self.get(2, cum_distance)])
-                            
-        argmin = np.nanargmin(d)            
-                    
-        return(d[argmin], argmin)
-    
-    @staticmethod
-    def step_to_idxs(step, idx_act, idx_est):
-        '''
-        Map a step in (0,1,2) to the change in (idx_act, idx_est)
-        ''' 
-        if step == 0:
-            return(idx_act-1, idx_est)
-        elif step == 1:
-            return(idx_act, idx_est-1)
-        elif step == 2:
-            return(idx_act-1, idx_est-1)
-        else:
-            raise(ValueError('Step not valid'))
-        
-class OnlineDTW():
-    '''
-    Implementation of the online DTW matcher as per S. Dixon.
-    Resources:
-    http://eecs.qmul.ac.uk/~simond/pub/2005/dafx05.pdf
-    https://www.eecs.qmul.ac.uk/~simond/pub/2010/Macrae-Dixon-ISMIR-2010-WindowedTimeWarping.pdf
-    http://www.cp.jku.at/research/papers/Arzt_Masterarbeit_2007.pdf
-    https://code.soundsoftware.ac.uk/projects/match/repository/entry/at/ofai/music/match/Finder.java
-    '''
-    def __init__(self, 
-                 features_act,
-                 distance_fcn=utils.distance_chroma, 
-                 diag_cost=1, 
-                 alpha=1.0, 
-                 smoothing_parameter=1.0,
-                 positions_type='min',
-                 light_run=True):
-        
-        
-        self.features_act = features_act 
-        self.nb_obs_feature_act = features_act.shape[0]
-        self.nb_bin_feature = features_act.shape[1]
-        
-        # Current position in the act / est data.
-        # Set to -1 as no data has been processed.
-        self.idx_act = -1
-        self.idx_est = -1
-        
-        # Initialise position and position_sec and position_tick.  
-        # They represent the expected position in the Midi file.
-        # The best distance is the total alignment distance (cum or EWMA)
-        # We have:  best_distance = [x[-1] for x in best_paths_distance] 
-        self.position = 0
-        self.positions = []
-        
-        # Distance function
-        self.distance_fcn = distance_fcn
-
-        # DTW parameters
-        self.search_width = 100 # width of the band to search the optimal alignment (in frames)
-        self.min_data = 20 # min number of input frames to compute before doing anything        
-        self.diag_cost = diag_cost # the cost for the diagonal (1.0<=x<=2.0, may be set to less than 2 to let the algorithm favour diagonal moves)
-        self.alpha = alpha # Alpha enable to either use cumulative distance (alpha = 1) or EWMA distance (alpha < 1).
-        self.smoothing_parameter = smoothing_parameter
-        
-        # Position reported
-        self.positions_type = positions_type           
-                
-        # Boolean to check if the new input has been processed
-        self.input_advanced = False
-        
-        # Initialise large empty matrices for features_est and for the cumulative distance matrix
-        self.features_est = np.zeros((max(self.nb_obs_feature_act*2, 2000), self.nb_bin_feature))
-        self.features_est.fill(np.nan)
-        self.cum_distance = np.zeros((self.nb_obs_feature_act, self.features_est.shape[0]), dtype='float32')
-        self.cum_distance.fill(np.nan)
-        
-        # Initialise large empty matrices for the steps
-        self.steps = np.zeros((self.nb_obs_feature_act, self.features_est.shape[0]), dtype='int16')
-        self.steps.fill(np.iinfo(np.int16).min)
-        
-        # Initialise the best_paths, in order to keep the best path at each iteration
-        # (one iteration correspond to one update of the live feed)
-        self.light_run = light_run # Flag to backtrack or not 
-        self.best_paths = []
-        self.best_paths_distance = []
-        
-    def select_advance_direction(self):        
-        
-        idx_est = self.idx_est
-        idx_act = self.idx_act
-            
-        if idx_est < self.min_data or idx_act < self.min_data:
-            return(0)  
-        
-        if idx_act >= self.nb_obs_feature_act - 1:
-            return(2)        
-        
-        # Check if the minimum distance is in the last row or in the last column
-        arg_min_row = np.nanargmin(self.cum_distance[idx_act,0:idx_est+1])
-        arg_min_col = np.nanargmin(self.cum_distance[0:idx_act+1,idx_est])
-                
-        if arg_min_row == idx_est and arg_min_col == idx_act:
-            direction = 0 # compute both row and column
-        elif self.cum_distance[idx_act,arg_min_row] < self.cum_distance[arg_min_col,idx_est]:
-            direction = 1 # compute next row
-        else:
-            direction = 2 # compute next column  
-                        
-        return(direction)
-
-    def find_cells(self, i, j):
-        '''
-        The function identifies the cells that should be evaluated.
-        Refer to Figure 2 of http://eecs.qmul.ac.uk/~simond/pub/2005/dafx05.pdf
-        for detail on the possible cases.                  
-        '''
-         
-        if i-1 < 0:
-            return(CellList(w=(i, j-1)))            
-             
-        if j-1 < 0:
-            return(CellList(s=(i-1,j)))
-         
-        isnan_s = np.isnan(self.cum_distance[i-1, j])
-        isnan_w = np.isnan(self.cum_distance[i, j-1])
-        isnan_sw = np.isnan(self.cum_distance[i-1, j-1])       
-         
-        # Standard case: compute everything        
-        if not isnan_s and not isnan_w and not isnan_sw:
-            return(CellList(s=(i-1, j), w=(i, j-1), sw=(i-1,j-1)))
-         
-        # Edge case: nothing to compute.  
-        elif isnan_s and isnan_w and isnan_sw:
-            ValueError('Could not find any valid cell leading to  {}, {}'.format(i, j))            
-         
-        # Otherwise, find the relevant cells to compute
-        elif isnan_s and isnan_sw:
-            return(CellList(w=(i,j-1)))
-         
-        elif isnan_w and isnan_sw:
-            return(CellList(s=(i-1,j)))
-         
-        elif isnan_s:
-            return(CellList(w=(i,j-1), sw=(i-1,j-1)))
-         
-        elif isnan_w:
-            return(CellList(s=(i-1,j), sw=(i-1,j-1)))
-                            
-    def update_cum_distance(self, direction):
-        '''
-        Taking the existing cum_distance matrix and the search direction, this function
-        updates the cum_distance by finding the (local) min distance path.
-        '''
-        
-        # For the first iteration, just take the distance between the two chromagrams
-        if self.idx_act == -1 and self.idx_est == -1:
-            self.idx_act += 1
-            self.idx_est += 1
-            self.cum_distance[self.idx_act, self.idx_est] = self.distance_fcn(self.features_act[self.idx_act, :], 
-                                                                                  self.features_est[self.idx_est, :])
-            self.input_advanced = True            
-            return                        
-        
-        if direction == 0:
-            # Update in both directions, but start by updating in the live feed direction
-            # (not required, but this is what Dixon does)
-            self.update_cum_distance(2)
-            self.update_cum_distance(1)
-            return
-                        
-        if direction == 1:
-            # Advance the score
-            self.idx_act += 1
-            idx_act = self.idx_act
-            idx_est = self.idx_est
-            
-            for k in np.arange(max(idx_est-self.search_width+1, 0), idx_est+1):                
-                curr_cost = self.distance_fcn(self.features_act[idx_act, :], self.features_est[k, :])                
-                cells = self.find_cells(idx_act, k)                                                                 
-                (self.cum_distance[idx_act, k], self.steps[idx_act, k]) = cells.find_best_step(self.cum_distance, 
-                                                                                               curr_cost, 
-                                                                                               self.diag_cost,
-                                                                                               alpha=self.alpha)
-                
-            return
-            
-        if direction == 2:
-            # Advance the live feed
-            self.idx_est += 1
-            self.input_advanced = True  
-            idx_act = self.idx_act
-            idx_est = self.idx_est
-
-            min_idx_act = max(idx_act-int(ceil(self.search_width/2.0))+1, 0)
-            max_idx_act = min(idx_act+int(ceil(self.search_width/2.0))+1, self.nb_obs_feature_act)
-            for k in np.arange(min_idx_act, max_idx_act):                
-                curr_cost = self.distance_fcn(self.features_act[k, :], self.features_est[idx_est, :])
-                cells = self.find_cells(k, idx_est)
-                (self.cum_distance[k, idx_est], self.steps[k, idx_est]) = cells.find_best_step(self.cum_distance, 
-                                                                                               curr_cost, 
-                                                                                               self.diag_cost,
-                                                                                               alpha=self.alpha)                
-            return
-
-    def update_best_path(self, max_backtrack=np.inf):
-        '''
-        Based on the cum distance matrix, this function finds the best path
-        Running this function is not required for the main loop, it serves mainly 
-        for ex-post analysis.
-        ''' 
- 
-        idx_est = self.idx_est               
-        idx_act = self.position
- 
-        best_path = ([idx_act], [idx_est])
-        best_path_distance = [self.cum_distance[idx_act, idx_est]]       
-             
-        # Iterate until the starting point
-        cnt_backtract = 0
-        while cnt_backtract < max_backtrack and idx_est > 0 :                                    
-             
-            (idx_act, idx_est_new) = CellList.step_to_idxs(self.steps[idx_act, idx_est], idx_act, idx_est)                         
-            cnt_backtract += idx_est - idx_est_new
-             
-            if idx_est - idx_est_new != 0: 
-                best_path_distance.append(self.cum_distance[idx_act,idx_est_new])
-                best_path[0].append(idx_act)
-                best_path[1].append(idx_est_new)
-                 
-            idx_est = idx_est_new
-             
-        # Keep the best path for successive iterations
-        # (the history of the best paths could be dropped at a later stage) 
-        self.best_paths.append(best_path)
-        self.best_paths_distance.append(list(reversed(best_path_distance)))            
-        
-    def update_position(self):        
-        '''
-        Append idx_act to the list of estimated positions (and the equivalent in seconds). 
-        In the case we have the midi_object available, also report the position in ticks
-        '''
-        position_type = self.positions_type
-        
-        if position_type == 'idx_act':
-            self.position = self.idx_act
-        elif position_type == 'min': 
-            self.position = np.nanargmin(self.cum_distance[:,self.idx_est])
-        elif position_type == 'adj_min':            
-            adj_distance = self.cum_distance[:,self.idx_est] / np.arange(1,self.cum_distance.shape[0]+1)
-            self.position = np.nanargmin(adj_distance)
-        
-        self.positions.append(self.position)  
-        
-    def plot_dtw_distance(self, paths=[-1]):
-        '''
-        Plot the cumulative distance matrix as a heat map and the best path.
-        
-        path_nb is the number of the path we want to plot (-1 for the final path). 
-        '''
-        utils.plot_dtw_distance(self.cum_distance)
-
-        for k in paths:
-            plt.plot(self.best_paths[k].cols, self.best_paths[k].rows, color='black')                                              
-
-    def main_dtw(self, features_est_new): 
-        '''
-        Called for every new frame of the live feed, for which we run the online DTW
-        '''
-        
-        if features_est_new.shape != (self.nb_bin_feature,):
-            raise(ValueError('Incompatible shape, expect 1D array with {} items'.format(self.nb_bin_feature)))
-        
-        # Store the new features
-        self.features_est[self.idx_est+1, :] = features_est_new
-                                    
-        # Run the main loop until the input has been advanced
-        self.input_advanced = False        
-        while not self.input_advanced:                     
-            direction = self.select_advance_direction()
-            self.update_cum_distance(direction)        
-                    
-        # Update the estimated current position
-        self.update_position()    
-        
-        # Find the best path, if need be    
-        if not self.light_run:                
-            self.update_best_path(10)  
             
 class OnlineLocalDTW():
     """
@@ -338,13 +16,13 @@ class OnlineLocalDTW():
     We allow for subsequence alignment. There is no continuity constraint.    
     """
     def __init__(self,
-                 features_act, 
-                 diag_cost=1.0, 
-                 dtw_width=50):
+                 features_act,
+                 nb_frames_dtw_est,  
+                 diag_cost=1.0):                
         
         # Input features, the ones we want to track
         self.features_act = features_act 
-        self.nb_obs_feature_act = features_act.shape[0]
+        self.nb_frames_feature_act = features_act.shape[0]
         self.nb_bin_feature = features_act.shape[1]        
         
         # Initialise position and position_sec and position_tick.  
@@ -359,16 +37,16 @@ class OnlineLocalDTW():
         self.idx_est = -1
 
         # DTW parameters
-        self.dtw_width = dtw_width 
+        self.nb_frames_dtw_est = nb_frames_dtw_est 
         self.diag_cost = diag_cost
         self.weights_mul = np.array([1.0*diag_cost, 1.0, 1.0])                  
         
         # Initialise large empty matrices for features_est and for the cumulative distance matrix
-        self.features_est = np.zeros((max(self.nb_obs_feature_act*2, 2000), self.nb_bin_feature))
+        self.features_est = np.zeros((max(self.nb_frames_feature_act*2, 2000), self.nb_bin_feature))
         self.features_est.fill(np.nan)
-        self.distance = np.zeros((self.nb_obs_feature_act, self.features_est.shape[0]), dtype='float32')
+        self.distance = np.zeros((self.nb_frames_feature_act, self.features_est.shape[0]), dtype='float32')
         self.distance.fill(np.nan)
-        self.cum_distance = np.zeros((self.nb_obs_feature_act, self.features_est.shape[0]), dtype='float32')
+        self.cum_distance = np.zeros((self.nb_frames_feature_act, self.features_est.shape[0]), dtype='float32')
         self.cum_distance.fill(np.nan)                                        
         
     def main_dtw(self, features_est_new, idx_act_lb, idx_act_ub, max_consecutive_steps):
@@ -381,7 +59,7 @@ class OnlineLocalDTW():
             raise(ValueError('Incompatible shape, expect 1D array with {} items'.format(self.nb_bin_feature)))
         
         if (idx_act_lb < 0 or idx_act_ub < 0 or idx_act_lb > idx_act_ub or             
-            idx_act_lb >= self.nb_obs_feature_act or idx_act_ub >= self.nb_obs_feature_act):           
+            idx_act_lb >= self.nb_frames_feature_act or idx_act_ub >= self.nb_frames_feature_act):           
             raise(ValueError(b'Incompatible bounds ({}/{})'.format(idx_act_lb, idx_act_ub)))        
         
         # Increment the live feed index
@@ -395,7 +73,7 @@ class OnlineLocalDTW():
         self.distance[:, self.idx_est] = np.reshape(cdist(self.features_act, np.atleast_2d(features_est_new)),-1,1)
         
         # Extract the distance block that we care about
-        distance_tmp = self.distance[idx_act_lb:idx_act_ub+1, max(self.idx_est-self.dtw_width+1, 0):self.idx_est+1]
+        distance_tmp = self.distance[idx_act_lb:idx_act_ub+1, max(self.idx_est-self.nb_frames_dtw_est+1, 0):self.idx_est+1]
         
         # Run the DTW with subsequence alignment (cython)
         cum_distance_tmp = dtw_fast(np.array(distance_tmp, dtype=np.float64) , self.weights_mul, 1, max_consecutive_steps)
@@ -411,22 +89,22 @@ class MatcherFilter():
     Also compute the search bounds for the DTW.
     '''
     
-    def __init__(self, nb_obs_act, nb_frames_dtw_est=30, nb_frames_dtw_act=100):
+    def __init__(self, nb_frames_act, nb_frames_dtw_est, nb_frames_dtw_act):
                     
-        # Number of frames in the act features
-        self.nb_obs_act = nb_obs_act
+        # Number of obs in the act features
+        self.nb_frames_act = nb_frames_act
         
         # Speed is the nb of act frames processed for one est frame
         self.speed = 1.0         
         self.min_speed = 1.0/3.0
         self.max_speed = 3.0      
-        self.nb_frames_speed_estimate = 50
+        self.nb_frames_speed_estimate = 50        
         self.positions_filtered = []
         self.min_frames_position_base = 50
         self.positions_base = []
         self.idx_est = -1
         self.nb_frames_dtw_est = nb_frames_dtw_est # nb frames of est data dtw uses 
-        self.nb_frames_dtw_act = nb_frames_dtw_act # nb frames of act data we dtw uses
+        self.nb_frames_dtw_act = nb_frames_dtw_act # nb frames of act data dtw uses
         self.idx_act_lb = 0
         self.idx_act_ub = self.idx_act_lb + int(ceil(self.nb_frames_dtw_act/2.0))
         
@@ -445,7 +123,11 @@ class MatcherFilter():
         # We only want to apply the local constraint once the following
         # has properly started. In the case where, the act feed starts later 
         # than the est feed, we don't want the local constraint to force moving forward. 
-        self.start_max_consecutive_steps = 50               
+        self.start_max_consecutive_steps = 50
+        
+        # Confidence calculation parameters
+        self.nb_frames_confidence_estimate = [30, 50, 100]
+        self.high_confidence_alignment = False               
         
     def update_speed(self):
         '''
@@ -481,7 +163,7 @@ class MatcherFilter():
         '''
         
         self.idx_act_lb = max(int(round(self.positions_base[-1])) - int(floor(self.nb_frames_dtw_act/2.0)), 0)
-        self.idx_act_ub = min(int(round(self.positions_base[-1])) + int(ceil(self.nb_frames_dtw_act/2.0)), self.nb_obs_act - 1)
+        self.idx_act_ub = min(int(round(self.positions_base[-1])) + int(ceil(self.nb_frames_dtw_act/2.0)), self.nb_frames_act - 1)
         
     def update_max_consecutive_steps(self):
         '''
@@ -492,27 +174,49 @@ class MatcherFilter():
             self.max_consecutive_steps = self.max_consecutive_steps_real
         else:  
             self.max_consecutive_steps = self.max_consecutive_steps_init
+    
+    def update_confidence(self):
+        '''
+        Estimate how much confidence we may put in the recent alignment.
+        '''
+        self.high_confidence_alignment = False
         
+        for nb_frames in self.nb_frames_confidence_estimate:
+            
+            if self.idx_est >= nb_frames:                                
+                confidence_x = np.array([np.arange(nb_frames), np.ones(nb_frames)]).T
+                confidence_y = np.array(self.positions_filtered[len(self.positions_filtered)-nb_frames:])
+                confidence_beta = np.linalg.lstsq(confidence_x, confidence_y)[0]
+                confidence_residuals = confidence_y - np.dot(confidence_x, confidence_beta)
+                confidence_bmk_residuals = confidence_y - np.mean(confidence_y) 
+                confidence_rsq = 1 - np.sum(np.power(confidence_residuals, 2)) / np.sum(np.power(confidence_bmk_residuals, 2))
+                
+                if confidence_beta[0] > self.min_speed and confidence_beta[0] < self.max_speed and confidence_rsq > 0.7:
+                    self.high_confidence_alignment = True
+                       
+
     def filter_position(self, cum_distance):        
         '''
         Taking the DTW distance as input, run some heuristics to identify our best guess of 
         the current position. In essence, we look for the point with the minimum DTW distance. 
         '''
         cum_distance_tmp = cum_distance[:, self.idx_est]
-        relative_mins_idxs, relative_mins_values = utils.find_relative_mins(np.atleast_2d(cum_distance_tmp).T, 10, 5)
-        
-        relative_mins_idxs = relative_mins_idxs[~np.isnan(relative_mins_idxs)].astype(np.int32)
-        relative_mins_values = relative_mins_values[~np.isnan(relative_mins_values)]
-        
-        random_distance_threshold = np.nanmean(cum_distance_tmp)
-        func_proba = np.vectorize(lambda x: 0 if x >= random_distance_threshold else 1-(x/float(random_distance_threshold))**2)
-        probas = func_proba(relative_mins_values)
-        relative_mins_idxs_high_proba = relative_mins_idxs[probas >= probas[0]-0.1]
         curr_position = self.positions_filtered[-1] if self.idx_est>0 else 0
+        relative_mins_idxs, relative_mins_values = utils.find_relative_mins(np.atleast_2d(cum_distance_tmp).T, 10, 5)
+         
+        relative_mins_idxs = relative_mins_idxs[~np.isnan(relative_mins_idxs)].astype(np.int32)
+        relative_mins_values = relative_mins_values[~np.isnan(relative_mins_values)]        
         
-        nearest_position_high_proba = relative_mins_idxs[np.nanargmin(np.abs(curr_position - relative_mins_idxs_high_proba))]
-        
-        self.positions_filtered.append(nearest_position_high_proba)         
+        nearest_position_tmp = np.nanargmin(np.abs(curr_position - relative_mins_idxs))
+        nearest_position_idx = relative_mins_idxs[nearest_position_tmp]
+        nearest_position_value = relative_mins_values[nearest_position_tmp]
+        # TODO : COMMENT AND REMOVE FIXED VALUE
+        if self.high_confidence_alignment and nearest_position_value < 37:            
+            position_filtered_new = nearest_position_idx             
+        else:
+            position_filtered_new = relative_mins_idxs[np.nanargmin(relative_mins_values)]
+         
+        self.positions_filtered.append(position_filtered_new)         
         
     def main_filter(self, cum_distance):
         '''
@@ -524,11 +228,13 @@ class MatcherFilter():
         self.idx_est += 1
         
         # Keep the last filtered positions
-        self.positions_filtered_last = np.array(self.positions_filtered[max(self.idx_est - self.nb_frames_speed_estimate + 1, 0):self.idx_est+1])
+#         self.positions_filtered_last = np.array(self.positions_filtered[max(self.idx_est - self.nb_frames_speed_estimate + 1, 0):self.idx_est+1])
+        self.positions_filtered_last = np.array(self.positions_filtered[max(self.idx_est - self.nb_frames_speed_estimate, 0):self.idx_est])
         
         self.update_speed()
         self.update_position_base()
         self.update_search_bounds()
+        self.update_confidence()
         self.filter_position(cum_distance)
         self.update_max_consecutive_steps()        
                                                                                                 
@@ -538,8 +244,6 @@ class Matcher():
     This class serves as a wrapper around the online DTW.
     '''
     def __init__(self, wd, filename, sr, hop_length,
-                 dtw_fcn=OnlineLocalDTW,                   
-                 dtw_kwargs={}, 
                  compute_chromagram_fcn=lb.feature.chroma_stft,                
                  compute_chromagram_fcn_kwargs={}, 
                  chromagram_mode=0,
@@ -580,7 +284,7 @@ class Matcher():
             chromagram_act = self.get_chromagram(wd, filename_clean)
             
         # Keep the number of frames of the act features
-        self.nb_obs_feature_act = chromagram_act.shape[0]   
+        self.nb_frames_feature_act = chromagram_act.shape[0]   
 
         # Place-holders for the position
         self.position_tick = 0
@@ -588,10 +292,41 @@ class Matcher():
         self.positions = []
         
         # Initialise the DTW engine
-        self.dtw = dtw_fcn(chromagram_act, **dtw_kwargs)
+        nb_frames_dtw_est = 50
+        nb_frames_dtw_act = 150
+        max_consecutive_steps = 3
+        dtw_fcn = dtw_fast
+        distance_local_fcn = cdist
+        self.dtw = OnlineLocalDTW(chromagram_act, nb_frames_dtw_est)
         
         # Initialise the filter
-        self.filter = MatcherFilter(chromagram_act.shape[0])            
+        self.filter = MatcherFilter(self.nb_frames_feature_act, nb_frames_dtw_est, nb_frames_dtw_act)
+        
+        # TODO : PUT IN PROPER FUNCTION, COMMENT AND STORE THE CHROMAGRAM
+        samples_idxs = [4,12,21,28,36,37,45,48,51,52,53,54,59,61,69,75,76,87,89,91]
+        wd_samples = utils.WD_AUDIOSET + r"VerifiedDataset//VerifiedDatasetRecorded//"
+        nb_frames_per_sample = 100
+        chromagram_sample = np.empty([nb_frames_per_sample*len(samples_idxs), chromagram_act.shape[1]])
+        
+        for k, idx in enumerate(samples_idxs):            
+            audio_data_sample = lb.core.load("{}sample_{}.wav".format(wd_samples, idx), sr = self.sr)[0]
+            chromagram_sample_tmp = self.compute_chromagram(audio_data_sample)  
+            chromagram_sample[k*nb_frames_per_sample:(k+1)*nb_frames_per_sample, :] = chromagram_sample_tmp[0:nb_frames_per_sample, :] 
+                
+        nb_boot = 500
+        boot_idx_act = np.random.randint(0, self.nb_frames_feature_act - nb_frames_dtw_act - 1, nb_boot)
+        boot_idx_est = np.random.randint(0, chromagram_sample.shape[0] - nb_frames_dtw_act - 1, nb_boot)
+        distance_stats = np.empty([nb_boot, 2])
+        for k in range(nb_boot):                        
+            chromagram_boot_act = chromagram_act[boot_idx_act[k]:boot_idx_act[k]+nb_frames_dtw_act,:]
+            chromagram_boot_est = chromagram_sample[boot_idx_est[k]:boot_idx_est[k]+nb_frames_dtw_est,:]
+            distance_boot = cdist(chromagram_boot_act, chromagram_boot_est)
+            distance_dtw_boot = dtw_fast(np.array(distance_boot, dtype=np.float64), self.dtw.weights_mul, 1, self.filter.max_consecutive_steps_real)
+            distance_dtw_boot = distance_dtw_boot[np.isfinite(distance_dtw_boot[:,-1]), -1]
+            distance_stats[k,0] = np.mean(distance_dtw_boot)
+            distance_stats[k,1] = np.min(distance_dtw_boot)
+                           
+        a = 1
         
     def get_chromagram(self, wd, filename):
         '''
