@@ -8,6 +8,7 @@ from csv import reader
 from pickle import load, dump, HIGHEST_PROTOCOL
 from os.path import isfile 
 from sklearn.neural_network import MLPClassifier
+from sklearn.svm import SVC
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import classification_report
 from sklearn.metrics import confusion_matrix
@@ -299,6 +300,10 @@ def audio_data_features_all(wd, df_info, sr, nb_sample, config_features):
         if row["valid"]:
             if isfile(row["filename_wav"]):           
                 audio_data_wav = lb.core.load(row["filename_wav"], sr = sr, dtype=utils.AUDIO_FORMAT_MAP[utils.AUDIO_FORMAT_DEFAULT][0])[0]
+#                 # REMOVE !!!!!!
+#                 from scipy.io.wavfile import read
+#                 audio_data_wav = read(row["filename_wav"])[1]
+                
                 
                 # Trim the leading silence if we expect music
                 if row['classification'] > 0:
@@ -379,30 +384,6 @@ def get_features(audio_data_wav, nb_sample, config_features):
     
     return((features_one_sample, idxs_normalise))
         
-def main_build_model(wd, sr, nb_sample, config_features):
-    '''
-    Entry point to build the neural network mode:
-    1) Get the audio data from disk and extract the relevant features.
-    2) Fit the neural network.
-    '''    
-         
-    filename_df_random_audioset = wd + FILENAME_INFO    
-    df_random_audioset = pd.read_pickle(filename_df_random_audioset)
-    df_random_audioset = df_random_audioset.loc[np.random.randint(0, high=len(df_random_audioset), size=50)]
-    
-    # Extract the features and the classifications, using the 
-    # Youtube samples stored on the disk 
-    (y, X, features_info) = audio_data_features_all(wd, df_random_audioset, sr, nb_sample, config_features)
-     
-    # Fit the neural network model
-    mlp = train_model(y, X)
-    
-    # Keep the features normalisation info in the MLP
-    mlp.features_info = features_info
-    
-    return(mlp)
-
-
 def get_config_features(sr, n_fft, hop_length):
     '''
     Get the list of all interesting features that can be used to fit the NN model.
@@ -446,8 +427,8 @@ def get_config_features(sr, n_fft, hop_length):
         ] 
     
     # Only return the config that works the best
-#     config_features = config_features[0:5] 
-    config_features = config_features[1:5]
+    config_features = config_features[1:5] 
+#     config_features = [config_features[1]]
     
     return config_features
 
@@ -484,49 +465,76 @@ def spectral_flux(y, S, sr, n_fft, hop_length):
     # Return as 2D array
     return np.expand_dims(flux, axis=0)
 
-def train_model(y, X, hidden_layer_sizes=(100)):
+def train_model(y, X, model_type):
     '''
-    Train the neural network. The features are concatenated into a 1D vector.    
+    Train the ML model. The features are concatenated into a 1D vector.    
     '''
      
     # Split into training and test sets
     # Fix the randomiser seed for now
     X_train, X_test, y_train, y_test = train_test_split(X, y)  #, random_state=1
+    
+    # Initialise the model, fix the random seed for now
+    if model_type == "mlp":            
+        model = MLPClassifier(hidden_layer_sizes=(100),max_iter=2000, random_state=1)
+        
+    elif model_type == "svm":
+        model = SVC(random_state=1)
      
-    # Initialise the MLP, fix the random seed for now
-    mlp = MLPClassifier(hidden_layer_sizes=hidden_layer_sizes,max_iter=2000, random_state=1)
-     
-    # Fit the MLP
-    mlp.fit(X_train,y_train)
+    # Fit the model
+    model.fit(X_train,y_train)
      
     # Print the stats        
-    print(classification_report(y_test,mlp.predict(X_test)))
+    print(classification_report(y_test,model.predict(X_test)))
+         
+    return(model)
+
+def main_build_model(wd, sr, nb_sample, config_features):
+    '''
+    Entry point to build the neural network mode:
+    1) Get the audio data from disk and extract the relevant features.
+    2) Fit the neural network.
+    '''    
+         
+    filename_df_random_audioset = wd + FILENAME_INFO    
+    df_random_audioset = pd.read_pickle(filename_df_random_audioset)
+#     df_random_audioset = df_random_audioset.loc[np.random.randint(0, high=len(df_random_audioset), size=200)] # TODO : REMOVE !!!
+    
+    # Extract the features and the classifications, using the 
+    # Youtube samples stored on the disk 
+    (y, X, features_info) = audio_data_features_all(wd, df_random_audioset, sr, nb_sample, config_features)
      
-    return(mlp)
+    # Fit the neural network model
+    model = train_model(y, X, "mlp")
+    
+    # Keep the features normalisation info in the MLP
+    model.features_info = features_info
+    
+    return(model)
          
 class MusicDetecter():
-    def __init__(self, wd, sr):
+    def __init__(self, wd, sr, force_rebuild=False):
          
         filename_model = wd + "music_recognition_model.pkl"        
-        nb_sample = 4096
+        nb_sample = 12288#4096
         self.config_features = get_config_features(utils.SR, 1048, 512) # Set to lower values to get meaningful stddev
          
         # If the model does not exists on disk, re-buid it and store it
-        if not isfile(filename_model):
+        if not isfile(filename_model) or force_rebuild:
                          
-            mlp = main_build_model(wd, sr, nb_sample, self.config_features)
+            model = main_build_model(wd, sr, nb_sample, self.config_features)
             
-            mlp.sr = sr
-            mlp.nb_sample = nb_sample
+            model.sr = sr
+            model.nb_sample = nb_sample
             
             # Store to disk
-            dump(mlp, open(filename_model, 'wb'))   
+            dump(model, open(filename_model, 'wb'))   
          
         # Retrieve the model from disk
-        self.mlp = load(open(filename_model, 'rb'))
+        self.model = load(open(filename_model, 'rb'))
          
         # Check that the model is as expected
-        if self.mlp.sr != sr or self.mlp.nb_sample != nb_sample:
+        if self.model.sr != sr or self.model.nb_sample != nb_sample:
             raise ValueError("The input parameters do not match with the ones of the model stored on the disk.")
          
         # Set placeholder for the features and the predictions
@@ -536,19 +544,19 @@ class MusicDetecter():
         
     def get_normalised_features(self, audio_data):
         
-        features = get_features(audio_data, self.mlp.nb_sample, self.config_features)[0] # Only return the features (not the normalisation index)
-        mask = self.mlp.features_info['idxs_normalise']
-        features[mask] = np.divide(features[mask] - np.squeeze(self.mlp.features_info['means']), np.squeeze(self.mlp.features_info['stds']))
+        features = get_features(audio_data, self.model.nb_sample, self.config_features)[0] # Only return the features (not the normalisation index)
+        mask = self.model.features_info['idxs_normalise']
+        features[mask] = np.divide(features[mask] - np.squeeze(self.model.features_info['means']), np.squeeze(self.model.features_info['stds']))
            
         return(features)
        
     def detect(self, audio_data):
         
-        if len(audio_data) < self.mlp.nb_sample:
+        if len(audio_data) < self.model.nb_sample:
             music_detected = False 
             diagnostic = 'Buffer not yet filled'
 
-        elif check_is_silence(audio_data, threshold=-60, func=lambda x: np.mean(np.abs(x))):
+        elif check_is_silence(audio_data, threshold=-65, func=lambda x: np.mean(np.abs(x))):
             music_detected = False
             diagnostic = 'Silence'
         
@@ -558,7 +566,9 @@ class MusicDetecter():
             # We reshape to get a 2D array (with a unique sample).
             features_flat = features.reshape(1, -1)
                           
-            music_detected = self.mlp.predict(features_flat)[0]
+            music_detected = self.model.predict(features_flat)[0]
+            music_detected = True if music_detected == 1 else False
+#             print(music_detected)
             diagnostic = 'Music' if music_detected else 'Noise/speech' 
             
             # Store the features - REMOVE
@@ -572,7 +582,6 @@ class MusicDetecter():
                      
         return(music_detected, diagnostic)
 
-    
 if __name__ == '__main__':                       
     music_detecter = MusicDetecter(utils.WD_AUDIOSET + "\VerifiedDataset\\VerifiedDatasetRecorded\\" , utils.SR)
     
@@ -580,31 +589,30 @@ if __name__ == '__main__':
 #     wd = utils.WD_AUDIOSET + "VerifiedDataset\\VerifiedDatasetRecorded\\"
 #             
 #     configs = get_config_features(utils.SR, 1024, 512)
-#     mlp = main_build_model(wd, utils.SR, 4096, configs)
+#     model = main_build_model(wd, utils.SR, 4096, configs)
     # for config in configs:
     #     print(config['fcn'].__name__) 
-    #     mlp = main_build_model(wd, utils.SR, 4096, [config]) 
+    #     model = main_build_model(wd, utils.SR, 4096, [config]) 
         
-#     music_detecter = MusicDetecter(wd, utils.SR)
-    
-    # df_info = pd.read_pickle(wd + FILENAME_INFO)
-    # df_info = df_info.assign(valid=np.ones(len(df_info), dtype=bool))
-    # (classification, features, features_info) = audio_data_features_all(wd, df_info, utils.SR, music_detecter.mlp.nb_sample, music_detecter.config_features)
+    #     music_detecter = MusicDetecter(wd, utils.SR)
+        
+    # wd = utils.WD_AUDIOSET + "VerifiedDataset\\VerifiedDatasetRecorded\\"
+    # configs = get_config_features(utils.SR, 1024, 512)
+    # filename_df_random_audioset = wd + FILENAME_INFO    
+    # df_random_audioset = pd.read_pickle(filename_df_random_audioset)
+    # df_random_audioset = df_random_audioset.loc[np.random.randint(0, high=len(df_random_audioset), size=200)]
     # 
-    # classification_pred = music_detecter.mlp.predict(features)
-    # 
-    # print classification_report(classification,classification_pred)
-    # confusion_matrix(classification,classification_pred)
-    # 
-    # plt.plot(np.abs(classification-classification_pred))
-    # 
-    # mlp2 = train_model(classification, features, (100,100))#0:400
-    # plt.plot(np.abs(classification-mlp2.predict(features)))
-     
-    # audio_data_wav = lb.core.load(utils.WD_AUDIOSET+'sample_28.wav', sr = utils.SR)[0]
-    # audio_data_wav = audio_data_wav[0:music_detecter.mlp.nb_sample]
+    # (y, X, features_info) = audio_data_features_all(wd, df_random_audioset, utils.SR, 4096, configs)
+    # X_train, X_test, y_train, y_test = train_test_split(X, y)  #, random_state=1
     #  
-    # music_detecter.detect(audio_data_wav)    
+    # model = MLPClassifier(hidden_layer_sizes=(100),max_iter=2000, random_state=1)
+    # model.fit(X_train,y_train)
+    # print(classification_report(y_test,model.predict(X_test)))
+    #     
+    # from sklearn import svm
+    # clf = svm.SVC()
+    # clf.fit(X_train, y_train)
+    # print(classification_report(y_test,clf.predict(X_test)))
      
     # Run the below off-line, if we want to recreate the dataset from scratch
     # (download the samples from Youtube and store the download info).
