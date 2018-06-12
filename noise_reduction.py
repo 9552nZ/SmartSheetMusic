@@ -4,15 +4,18 @@ import os
 os.environ['LIBROSA_CACHE_DIR'] = '/tmp/librosa_cache' # Enable librosa cache
 import librosa as lb
 import utils_audio_transcript as utils 
-from time import sleep
 import matplotlib.pyplot as plt
+from scipy.ndimage.filters import gaussian_filter1d
 
+# We set the window type to Hamming to avoid numerical
+# issues while running the algorithm online 
+# (the Hamming window does not go to zero at the edges)
 WINDOW_TYPE = 'hamming'
 
 class NoiseReducer():
     
     def __init__(self,
-                 alpha_power_spectrum=0.95,
+                 alpha_power_spectrum=0.99,
                  noise_bias_correction=1.5,
                  alpha_snr=0.98):
         
@@ -59,13 +62,6 @@ class NoiseReducer():
         # Store the SNR (posterior and prior) for the Ephraim-Malah algorithm
         self.snr_prior = np.zeros(self.stft.shape) + np.NaN
         self.snr_post = np.zeros(self.stft.shape) + np.NaN
-
-    @staticmethod
-    def stft_to_power_spectrum(s):
-        '''
-        Convert a stft to a power spectrum
-        '''
-        return np.abs(s)**2
         
     def calc_online_stft(self, audio_data_new_length):
         '''
@@ -93,8 +89,7 @@ class NoiseReducer():
     def calc_smooth_power_spectrum(self):
         '''
         Calculate the smoothed power spectrum
-        '''
-        alpha = 0.95        
+        '''            
         
         # For the first frame, we only have the raw power spectrogram
         idx_prev_adj = self.idx_prev
@@ -105,7 +100,9 @@ class NoiseReducer():
         # After the first frame, we can smooth with EWMA update
         self.smooth_power_spectrum = np.vstack((self.smooth_power_spectrum, np.zeros([self.idx_curr - idx_prev_adj, self.n_coef_fft])))    
         for k in np.arange(idx_prev_adj + 1, self.idx_curr + 1):
-            self.smooth_power_spectrum[k, :] = alpha * self.smooth_power_spectrum[k-1, :] + (1-alpha) * self.stft_mag[k,:]**2
+            update = (1-self.alpha_power_spectrum) * self.stft_mag[k,:]**2
+            self.smooth_power_spectrum[k, :] = self.alpha_power_spectrum * self.smooth_power_spectrum[k-1, :] + update
+        
     
     def calc_noise_estimate(self):
         '''
@@ -129,17 +126,18 @@ class NoiseReducer():
         np.nan_to_num (noise_estimate_new, copy=False)                 
         
         # Floor the noise power to the total power 
-        noise_estimate_new = np.minimum(noise_estimate_new, self.stft_mag[self.idx_prev+1:self.idx_curr+1 ,:]**2)
+        noise_estimate_new = np.minimum(noise_estimate_new, self.stft_mag[self.idx_prev+1:self.idx_curr+1 ,:]**2)            
 
         # Apply correction for bias (should go before the previous operation maybe?)
         noise_estimate_new = noise_estimate_new * self.noise_bias_correction
-        
+                
         # Append the new block 
         self.noise_estimate = np.vstack((self.noise_estimate, noise_estimate_new))
         
     def calc_gain_wiener(self):
         '''
-        Calculate the Wiener filter 
+        Calculate the Wiener filter
+        Can be issued as an alternative to the Ephraim Malah gain calculation.  
         '''            
         power_total = self.stft_mag[self.idx_prev + 1:self.idx_curr + 1, :]**2        
         power_noise_estimate = self.noise_estimate[self.idx_prev + 1:self.idx_curr + 1, :]        
@@ -226,65 +224,37 @@ class NoiseReducer():
         self.calc_online_stft(len(audio_data_new))
         self.calc_smooth_power_spectrum()
         self.calc_noise_estimate()
-#         self.calc_gain_wiener()
         self.calc_gain_ephraim_malah()
         self.reconstruct_audio_data()
         
-def figure():
-    f = plt.figure();
-    f.canvas.manager.window.wm_geometry('1432x880+2366+35')
+
                 
 wd = utils.WD + "Samples\SaarlandMusicData\SaarlandMusicDataRecorded//"
-filename_wav = wd + "Chopin_Op066_006_20100611-SMD.wav"
+filename_wav = wd + "Ravel_JeuxDEau_008_20110315-SMD.wav" #"Chopin_Op066_006_20100611-SMD.wav"
 audio_data = (lb.core.load(filename_wav, sr = utils.SR, dtype=utils.AUDIO_FORMAT_MAP[utils.AUDIO_FORMAT_DEFAULT][0])[0]).astype(np.float64)
 
-
-noise_reducer = NoiseReducer(noise_bias_correction=1)
-noise_reducer.main(audio_data)
-
-figure()
-plt.plot(np.abs(noise_reducer.stft[:, 510:]))
-plt.plot(noise_reducer.noise_estimate[:, 510:])
-plt.plot(noise_reducer.gain[:, 500:])
-
-# noise_reducer2 = NoiseReducer(noise_bias_correction=1.5)
+noise_reducer = NoiseReducer()
+# for k in np.arange(len(audio_data)//1024):    
+for k in np.arange(500):
+    noise_reducer.main(audio_data[k*1024:k*1024 + 1024])#[-220160:]
+    
+# noise_reducer2 = NoiseReducer()
 # noise_reducer2.main(audio_data)
+# 
+# figure()
+# plt.plot(noise_reducer.smooth_power_spectrum[355:,146])
+# plt.plot(noise_reducer.stft_mag[355:,146]**2)
+# plt.plot(noise_reducer.snr_post[355:,146])
+# plt.plot(noise_reducer.snr_prior[355:,146])
+# plt.plot(noise_reducer.gain[355:,146])
+# 
+# figure()
+# plt.plot(noise_reducer.audio_data)
+# plt.plot(noise_reducer.audio_data_denoised)
+# 
+#     
+# utils.write_wav(wd + "Ravel_JeuxDEau_008_20110315-SMD_denoised.wav", np.array(noise_reducer.audio_data_denoised), rate=utils.SR)
 
-r = np.arange(700, 750) 
-cmap='jet'
-plt.subplot(3,1,1)
-plt.pcolor(np.log(np.abs(noise_reducer.stft[r,:])).T, cmap=cmap)
-plt.subplot(3,1,2)
-plt.pcolor(np.log(np.abs(noise_reducer.stft_denoised[r,:])).T, cmap=cmap)
-plt.subplot(3,1,3)
-plt.pcolor(np.log(np.abs(noise_reducer2.stft_denoised[r,:])).T, cmap=cmap)
-
-gain = noise_reducer.gain
-gain[:, 200:] = 0
-stft_denoised = gain * noise_reducer.stft_mag * noise_reducer.stft_mag
-    
-audio_data_denoised = lb.spectrum.istft(stft_denoised.T, noise_reducer.hop_length, window=WINDOW_TYPE, center=False).tolist()
-
-# power_noise_estimate2 = np.mean(noise_reducer.stft_to_power_spectrum(noise_reducer.stft[830:837,:]), 0)
-# power_noise_estimate2 = np.convolve(power_noise_estimate2, np.ones(20)/20)[10:523]
-
-audio_data_rec = lb.spectrum.istft(noise_reducer.stft[198:,:].T, noise_reducer.hop_length, window=WINDOW_TYPE, center=False).tolist()
-audio_data_denoised = lb.spectrum.istft(noise_reducer.stft_denoised[195:,:].T, noise_reducer.hop_length, window=WINDOW_TYPE, center=False).tolist()
-
-plt.figure(); plt.plot(audio_data_denoised)
-plt.figure(); plt.plot(audio_data_rec)
-plt.figure(); plt.plot(noise_reducer.smooth_power_spectrum)
-
-
-noise_reducer2 = NoiseReducer()
-noise_reducer2.main(audio_data)
-
-for k in np.arange(100):
-    noise_reducer2.main(audio_data[1024*k:1024*k+1024])
-utils.write_wav(wd + "Chopin_Op066_006_20100611-SMD_denoised2.wav", np.array(noise_reducer2.audio_data_denoised), rate=utils.SR)
-    
-utils.write_wav(wd + "Chopin_Op066_006_20100611-SMD_denoised.wav", np.array(noise_reducer.audio_data_denoised), rate=utils.SR)
-utils.write_wav(wd + "Chopin_Op066_006_20100611-SMD_denoised3.wav", np.array(audio_data_denoised), rate=utils.SR)
 
 
         

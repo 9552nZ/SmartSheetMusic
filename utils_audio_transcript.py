@@ -5,7 +5,7 @@ from librosa.util import frame
 from sys import executable
 from datetime import timedelta
 from math import ceil
-from os.path import getsize
+from os.path import getsize, splitext
 
 
 # Constants
@@ -586,9 +586,8 @@ def start_and_record(filename, filename_new, sr=SR):
     # Without it, we would wait for the output of the command.
     DETACHED_PROCESS = 0x00000008    
     
-    # Find the lenghts (in secs) of teh target wave file.
-    #record_length = get_length_wav(filename)
-    record_length = 36.0
+    # Find the lenghts (in secs) of the target wave file.
+    record_length = get_length_audio_file(filename)    
     
     # Launch the wav via MPC.
     cmd = r'C:\\Program Files\\MPC-HC\\mpc-hc64.exe {}'.format(filename)        
@@ -603,9 +602,9 @@ def start_and_record(filename, filename_new, sr=SR):
            save=True, 
            filename_wav_out=filename_new)            
 
-def get_length_wav(filename):
+def get_length_audio_file(filename):
     '''
-    Get the length in seconds of a wave file.
+    Get the length in seconds of an audio file (wave or mp3).
     
     Parameters
     ----------
@@ -617,27 +616,40 @@ def get_length_wav(filename):
         The length of the file in seconds.
     
     '''
+    
+    _, extension = splitext(filename)
+    
+    if extension in ['.wav', '.wave']:
         
-    f = open(filename,"r")
-
-    #read the ByteRate field from file (see the Microsoft RIFF WAVE file format)
-    #https://ccrma.stanford.edu/courses/422/projects/WaveFormat/
-    #ByteRate is located at the first 28th byte
-    f.seek(28)
-    a=f.read(4)
+        # (in python2, f = open(filename,"r"))
+        f = open(filename, encoding='Latin-1')
     
-    #convert string a into integer/longint value
-    #a is little endian, so proper conversion is required
-    byte_rate = 0
-    for i in range(4):
-        byte_rate = byte_rate + ord(a[i])*pow(256,i)
-    
-    #get the file size in bytes
-    file_size = getsize(filename)
-    f.close()  
-    
-    #the duration of the data, in seconds, is given by
-    s = ((file_size-44))/float(byte_rate)   
+        #read the ByteRate field from file (see the Microsoft RIFF WAVE file format)
+        #https://ccrma.stanford.edu/courses/422/projects/WaveFormat/
+        #ByteRate is located at the first 28th byte
+        f.seek(28)
+        a=f.read(4)
+        
+        #convert string a into integer/longint value
+        #a is little endian, so proper conversion is required
+        byte_rate = 0
+        for i in range(4):
+            byte_rate = byte_rate + ord(a[i])*pow(256,i)
+        
+        #get the file size in bytes
+        file_size = getsize(filename)
+        f.close()  
+        
+        #the duration of the data, in seconds, is given by
+        s = ((file_size-44))/float(byte_rate)
+        
+    elif extension == '.mp3':   
+        from mutagen.mp3 import MP3
+        audio = MP3(filename)
+        s = audio.info.length
+        
+    else:
+        raise TypeError("Need either wave or mp3 file")
     
     return(s)
 
@@ -790,52 +802,11 @@ def dtw2(C, weights_mul=np.array([1.0, 1.0, 1.0]), subseq=False):
         D[i+1, j+1] = D_tmp[argmins, np.arange(0, len(argmins))]  
          
     return(D, D_steps)
- 
-# def dtw3(C, weights_mul=np.array([1.0, 1.0, 1.0]), subseq=False, max_consecutive_steps=3):%np.inf
-#     
-#     STEP_DIAG = 0
-#     STEP_COL = 1
-#     STEP_ROW = 2
-#                 
-#     D = C.copy()
-#     steps = np.zeros(C.shape, dtype='int32')
-#     consecutive_steps = np.zeros(C.shape, dtype='int32') + np.nan
-# 
-#     # Set starting point to C[0, 0]    
-#     D[0, :] = np.cumsum(C[0,:])
-#     steps[0, 1:] = STEP_COL 
-#     consecutive_steps[0, :] = np.arange(1, min(C.shape[1], max_consecutive_steps)+1) * STEP_COL
-#         
-#     if subseq:
-#         D[:, 0] = C[:, 0]
-#         steps [1:, 0] = STEP_COL
-#         consecutive_steps[:, 0] = STEP_ROW
-#     else:
-#         D[:, 0] = np.cumsum(C[:, 0])
-#         steps[1:, 0] = STEP_ROW
-#         consecutive_steps[:, 0] = np.arange(1, min(C.shape[0], max_consecutive_steps)+1) * STEP_ROW 
-#     
-#     r, c = np.array(C.shape)-1    
-#     for k in range(1, r+c):
-#         # We have i>=0, i<r, j>0, j<c and j-i+1=k
-#         i = np.arange(max(0, k-c), min(r, k))
-#         j = i[::-1] + k - min(r, k) - max(0, k-c)
-#         
-#         D_tmp = np.array([D[i, j] + D[i+1, j+1] * weights_mul[STEP_DIAG],
-#                           D[i, j+1] + D[i+1, j+1] * weights_mul[STEP_COL],         
-#                           D[i+1, j] + D[i+1, j+1] * weights_mul[STEP_ROW]])
-#         
-# #         cum_steps_tmp = np.array([cum_steps[i, j], cum_steps[i, j+1], cum_steps[i+1, j]])
-#          
-#         i_steps = np.vstack([np.maximum(i - m, 0) for m in np.arange(max_consecutive_steps-1,-1,-1)])
-#         
-#         steps[i, j]
-#         if k >=  max_consecutive_steps:
-#             a=1
-#         
-#         argmins = np.argmin(D_tmp, axis=0)
-#         consecutive_steps[i+1, j+1] += argmins 
-# #         cum_steps[i+1, j+1] += cum_steps_tmp[argmins, np.arange(0, len(argmins))]
-#         D[i+1, j+1] = D_tmp[argmins, np.arange(0, len(argmins))]  
-#         
-#     return(D, 1)
+
+def figure():
+    '''
+    Wrapper around plt.figure() to create a figure and position it.
+    '''
+    import matplotlib.pyplot as plt
+    f = plt.figure();
+    f.canvas.manager.window.wm_geometry('1432x880+2366+35')
