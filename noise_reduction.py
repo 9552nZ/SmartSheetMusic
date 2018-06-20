@@ -5,7 +5,6 @@ os.environ['LIBROSA_CACHE_DIR'] = '/tmp/librosa_cache' # Enable librosa cache
 import librosa as lb
 import utils_audio_transcript as utils 
 import matplotlib.pyplot as plt
-from scipy.ndimage.filters import gaussian_filter1d
 
 # We set the window type to Hamming to avoid numerical
 # issues while running the algorithm online 
@@ -37,22 +36,31 @@ class NoiseReducer():
         self.n_fft = 1024
         self.hop_length = 512
         self.n_coef_fft = self.n_fft//2 + 1
-        self.stft = np.zeros([0, self.n_coef_fft], dtype=np.complex64) + np.NaN
+        
+        # Pre-allocate the all the arrays to receive max 30 mins of data.
+        # We could drop the back of the data should memory become a problem.
+        self.max_frames = int(30*60*utils.SR/self.hop_length) 
+        self.stft = np.zeros([self.max_frames, self.n_coef_fft], dtype=np.complex64) + np.NaN
+        
         # Store the magnitude and phase (redundant with STFT, could be removed)
         self.stft_mag = np.zeros(self.stft.shape) + np.NaN
         self.stft_phase = np.zeros(self.stft.shape, dtype=np.complex64) + np.NaN                
         
-        # The (total) power spectrum smoothed (in the time dimension)
+        # The (total) power spectrum smoothed (in the time dimension) and the running min
         self.smooth_power_spectrum = np.zeros(self.stft.shape) + np.NaN
+        self.min_smooth_power_spectrum = np.zeros(self.stft.shape)
         
         # The estimate for the noise power spectrum
-        self.noise_estimate = np.zeros(self.stft.shape) + np.NaN
+        self.noise_estimate = np.zeros(self.stft.shape)
+        
+        # The index for the previous estimation of noise        
+        self.idx_prev_noise_estimate = -np.Inf
         
         # The gain (i.e. the frequency filter that we apply to the raw signal)
         self.gain = np.zeros(self.stft.shape) + np.NaN
         
         # Keep the post-cleaning STFT (only for reporting)
-        self.stft_denoised = np.zeros(self.stft.shape) + np.NaN
+        self.stft_denoised = np.zeros(self.stft.shape, dtype=np.complex64) + np.NaN
         
         # After iterating the main loop, we have processed up to
         # (and including) self.idx_curr
@@ -70,21 +78,26 @@ class NoiseReducer():
         such that the windowing is valid and compute the FFT. 
         '''
         # We need to get (n_fft - hop_length) samples from the previous audio data
-        start_idx = max(len(self.audio_data) - audio_data_new_length - self.n_fft + self.hop_length, 0)
+        start_idx = max(len(self.audio_data) - audio_data_new_length - self.n_fft + self.hop_length, 0)        
         
-        # Calculate the STFT for the new blocks
-        stft = lb.spectrum.stft(np.array(self.audio_data[start_idx:]), self.n_fft, self.hop_length, window=WINDOW_TYPE, center=False)
-        
-        # Also calculate the magnitude and phase sprectra
-        [stft_mag, stft_phase] = lb.core.magphase(stft)   
-        
-        # Append the new blocks   
-        self.stft = np.vstack((self.stft, stft.T))
-        self.stft_mag = np.vstack((self.stft_mag, stft_mag.T))
-        self.stft_phase = np.vstack((self.stft_phase, stft_phase.T))
-        
+        # Update the indices
+        n_new_frames = (len(self.audio_data[start_idx:]) - self.n_fft) // self.hop_length + 1
         self.idx_prev = self.idx_curr 
-        self.idx_curr = self.stft.shape[0]-1
+        self.idx_curr = self.idx_prev + n_new_frames
+        
+        # Break if we have reached the maximum buffer size
+        if self.idx_curr > self.max_frames-1:
+            raise(IndexError("Reached max size for the noise reduction audio buffer"))
+        
+        # Calculate the STFT for the new frames
+        self.stft[self.idx_prev+1:self.idx_curr+1] = lb.spectrum.stft(np.array(self.audio_data[start_idx:]), self.n_fft, 
+                                                                      self.hop_length, window=WINDOW_TYPE, center=False).T
+        
+        # Also calculate the magnitude and phase spectra
+        [stft_mag, stft_phase] = lb.core.magphase(self.stft[self.idx_prev+1:self.idx_curr+1].T)   
+        self.stft_mag[self.idx_prev+1:self.idx_curr+1] = stft_mag.T
+        self.stft_phase[self.idx_prev+1:self.idx_curr+1] = stft_phase.T       
+
         
     def calc_smooth_power_spectrum(self):
         '''
@@ -94,45 +107,46 @@ class NoiseReducer():
         # For the first frame, we only have the raw power spectrogram
         idx_prev_adj = self.idx_prev
         if self.idx_prev < 0:
-            self.smooth_power_spectrum = self.stft_mag[0,:]**2
+            self.smooth_power_spectrum[0,:] = self.stft_mag[0,:]**2
             idx_prev_adj = idx_prev_adj + 1
         
-        # After the first frame, we can smooth with EWMA update
-        self.smooth_power_spectrum = np.vstack((self.smooth_power_spectrum, np.zeros([self.idx_curr - idx_prev_adj, self.n_coef_fft])))    
+        # After the first frame, we can smooth with EWMA update           
         for k in np.arange(idx_prev_adj + 1, self.idx_curr + 1):
             update = (1-self.alpha_power_spectrum) * self.stft_mag[k,:]**2
             self.smooth_power_spectrum[k, :] = self.alpha_power_spectrum * self.smooth_power_spectrum[k-1, :] + update
-        
-    
+
     def calc_noise_estimate(self):
         '''
         Calculate the noise estimate based on the running minimum of 
         the smoothed power spectrum.
         '''        
-        min_n_frames_noise_estimation = 50
-        n_frames_noise_estimation = 50
+        min_n_frames_noise = 50
+        n_frames_noise_lookback = 50
+        n_frames_noise_update = 20        
         
-        # Until we have enough data for estimation, assume no noise
-        if self.idx_curr < min_n_frames_noise_estimation:
-            self.noise_estimate = np.vstack((self.noise_estimate, np.zeros([self.idx_curr - self.idx_prev, self.n_coef_fft])))
-            return
-        
-        # Calculate the rolling minimum of the smoothed total power
-        smooth_power_spectrum_new = self.smooth_power_spectrum[max(self.idx_prev - n_frames_noise_estimation, 0):, :] 
-        noise_estimate_new = pd.DataFrame(smooth_power_spectrum_new).rolling(n_frames_noise_estimation).min().as_matrix()            
-        noise_estimate_new = noise_estimate_new[len(noise_estimate_new) - (self.idx_curr - self.idx_prev):, :]
-        
-        # Zero-out nans (as the rolling min returns NaN in the initialisation period)        
-        np.nan_to_num (noise_estimate_new, copy=False)                 
-        
-        # Floor the noise power to the total power 
-        noise_estimate_new = np.minimum(noise_estimate_new, self.stft_mag[self.idx_prev+1:self.idx_curr+1 ,:]**2)            
+        # Only update the rolling minimum every n_frames_noise_update
+        # (for computational speed reasons)
+        for k in np.arange(self.idx_prev+1, self.idx_curr+1):
 
-        # Apply correction for bias (should go before the previous operation maybe?)
-        noise_estimate_new = noise_estimate_new * self.noise_bias_correction
-                
-        # Append the new block 
-        self.noise_estimate = np.vstack((self.noise_estimate, noise_estimate_new))
+            # Until we have enough data for estimation, assume no noise
+            if k >= min_n_frames_noise-1:            
+                            
+                # Calculate the minimum of the smoothed total power
+                if self.idx_prev_noise_estimate + n_frames_noise_update <= k:
+                    min_smooth_power_spectrum_new = np.min(self.smooth_power_spectrum[max(k - n_frames_noise_lookback, 0):k+1, :], axis=0) 
+                    min_smooth_power_spectrum_new = min_smooth_power_spectrum_new * self.noise_bias_correction # Apply correction for bias
+                    self.idx_prev_noise_estimate = k
+                                                        
+                # Otherwise, carry forward the previous estimate
+                else:
+                    min_smooth_power_spectrum_new = self.min_smooth_power_spectrum[k-1,:]
+                    
+                # Either way, cap the noise power to the total power 
+                noise_estimate_new = np.minimum(min_smooth_power_spectrum_new, self.stft_mag[k ,:]**2)
+            
+                # Assign the new row 
+                self.noise_estimate[k,:] = noise_estimate_new
+                self.min_smooth_power_spectrum[k,:] = min_smooth_power_spectrum_new
         
     def calc_gain_wiener(self):
         '''
@@ -184,9 +198,9 @@ class NoiseReducer():
             gain[k,:] = np.sqrt(p * (1/snr_post[k,:] + p))   
             
         # Append the gain and SNRs for the new block 
-        self.snr_prior = np.vstack((self.snr_prior, snr_prior))           
-        self.snr_post = np.vstack((self.snr_post, snr_post))
-        self.gain = np.vstack((self.gain, gain))
+        self.snr_prior[self.idx_prev+1:self.idx_curr+1] = snr_prior           
+        self.snr_post[self.idx_prev+1:self.idx_curr+1] = snr_post
+        self.gain[self.idx_prev+1:self.idx_curr+1] = gain
                
         
     def reconstruct_audio_data(self): 
@@ -199,11 +213,10 @@ class NoiseReducer():
         idxs = np.arange(self.idx_prev + 1, self.idx_curr + 1)
         
         # denoised = gain X magnitude total X phase total
-        stft_denoised = self.gain[idxs, :] * self.stft_mag[idxs, :] * self.stft_phase[idxs, :]
-        self.stft_denoised = np.vstack((self.stft_denoised, stft_denoised)) 
+        self.stft_denoised[idxs, :] = self.gain[idxs, :] * self.stft_mag[idxs, :] * self.stft_phase[idxs, :]
         
         # Reconstruct the signal in the time space    
-        audio_data_denoised = lb.spectrum.istft(stft_denoised.T, self.hop_length, window=WINDOW_TYPE, center=False).tolist()
+        audio_data_denoised = lb.spectrum.istft(self.stft_denoised[idxs, :].T, self.hop_length, window=WINDOW_TYPE, center=False).tolist()
         
         # We need to ditch the beginning of the series (as it add been already 
         # been processed in the previous iterations).
@@ -215,6 +228,16 @@ class NoiseReducer():
         
     
     def main(self, audio_data_new):
+        '''
+        Entry-point for the noise reduction algorithm.
+        Usage: Make successive calls to main() with new (non-overlapping) chunks of raw audio.
+        The algorithm:
+        - append the data to the audio buffer
+        - calculate the spectrum
+        - estimate the noise
+        - calculate the gain
+        - apply the gain and reconstruct the denoised data
+        '''
         
         # Check that the input audio is as expected
         if len(audio_data_new) < self.n_fft or len(audio_data_new) % self.hop_length != 0:
@@ -227,32 +250,51 @@ class NoiseReducer():
         self.calc_gain_ephraim_malah()
         self.reconstruct_audio_data()
         
-
                 
 wd = utils.WD + "Samples\SaarlandMusicData\SaarlandMusicDataRecorded//"
 filename_wav = wd + "Ravel_JeuxDEau_008_20110315-SMD.wav" #"Chopin_Op066_006_20100611-SMD.wav"
 audio_data = (lb.core.load(filename_wav, sr = utils.SR, dtype=utils.AUDIO_FORMAT_MAP[utils.AUDIO_FORMAT_DEFAULT][0])[0]).astype(np.float64)
 
 noise_reducer = NoiseReducer()
-# for k in np.arange(len(audio_data)//1024):    
-for k in np.arange(500):
-    noise_reducer.main(audio_data[k*1024:k*1024 + 1024])#[-220160:]
+
+noise_reducer.main(audio_data)
+
+
+# for k in np.arange(len(audio_data)//1024):
+import time
+start_time = time.time()
+for k in np.arange(500):    
+    noise_reducer.main(audio_data[k*1024:k*1024 + 1024])
+print("--- %s seconds ---" % (time.time() - start_time))
+
+utils.figure();
+idx = 30000
+plt.plot(noise_reducer.audio_data[0:idx])
+plt.plot(noise_reducer.audio_data_denoised[0:idx])
+plt.plot(noise_reducer2.audio_data_denoised[0:idx])
+
+utils.figure();
+idx = 30
+plt.plot(noise_reducer.noise_estimate[0:noise_reducer.idx_curr+1, idx])
+plt.plot(noise_reducer2.noise_estimate[0:noise_reducer2.idx_curr+1, idx])
+plt.plot(noise_reducer2.min_smooth_power_spectrum[0:noise_reducer2.idx_curr+1, idx])
+
+
+# def rolling_window_lastaxis(a, window):
+#     shape = a.shape[:-1] + (a.shape[-1] - window + 1, window)
+#     strides = a.strides + (a.strides[-1],)
+#     return np.lib.stride_tricks.as_strided(a, shape=shape, strides=strides)
+# rolling_window_lastaxis(a, 2)    
+
+# a = np.flipud(np.vstack((np.arange(9), 2*np.arange(9))).T)
+# 
+# a_strided = np.lib.stride_tricks.as_strided(a, shape=(3,2,5), strides=(a.strides[0]*2, a.strides[1], a.strides[0]))
+# mins = np.flipud(np.min(a_strided, axis=2))
+# a_strided.shape
+# 
+# 
+# a=1
     
-# noise_reducer2 = NoiseReducer()
-# noise_reducer2.main(audio_data)
-# 
-# figure()
-# plt.plot(noise_reducer.smooth_power_spectrum[355:,146])
-# plt.plot(noise_reducer.stft_mag[355:,146]**2)
-# plt.plot(noise_reducer.snr_post[355:,146])
-# plt.plot(noise_reducer.snr_prior[355:,146])
-# plt.plot(noise_reducer.gain[355:,146])
-# 
-# figure()
-# plt.plot(noise_reducer.audio_data)
-# plt.plot(noise_reducer.audio_data_denoised)
-# 
-#     
 # utils.write_wav(wd + "Ravel_JeuxDEau_008_20110315-SMD_denoised.wav", np.array(noise_reducer.audio_data_denoised), rate=utils.SR)
 
 
