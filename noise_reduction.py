@@ -1,10 +1,8 @@
-import pandas as pd
 import numpy as np
 import os
 os.environ['LIBROSA_CACHE_DIR'] = '/tmp/librosa_cache' # Enable librosa cache
 import librosa as lb
 import utils_audio_transcript as utils 
-import matplotlib.pyplot as plt
 
 # We set the window type to Hamming to avoid numerical
 # issues while running the algorithm online 
@@ -251,52 +249,24 @@ class NoiseReducer():
         self.reconstruct_audio_data()
         
                 
-wd = utils.WD + "Samples\SaarlandMusicData\SaarlandMusicDataRecorded//"
-filename_wav = wd + "Ravel_JeuxDEau_008_20110315-SMD.wav" #"Chopin_Op066_006_20100611-SMD.wav"
-audio_data = (lb.core.load(filename_wav, sr = utils.SR, dtype=utils.AUDIO_FORMAT_MAP[utils.AUDIO_FORMAT_DEFAULT][0])[0]).astype(np.float64)
-
-noise_reducer = NoiseReducer()
-
-noise_reducer.main(audio_data)
-
-
-# for k in np.arange(len(audio_data)//1024):
-import time
-start_time = time.time()
-for k in np.arange(500):    
-    noise_reducer.main(audio_data[k*1024:k*1024 + 1024])
-print("--- %s seconds ---" % (time.time() - start_time))
-
-utils.figure();
-idx = 30000
-plt.plot(noise_reducer.audio_data[0:idx])
-plt.plot(noise_reducer.audio_data_denoised[0:idx])
-plt.plot(noise_reducer2.audio_data_denoised[0:idx])
-
-utils.figure();
-idx = 30
-plt.plot(noise_reducer.noise_estimate[0:noise_reducer.idx_curr+1, idx])
-plt.plot(noise_reducer2.noise_estimate[0:noise_reducer2.idx_curr+1, idx])
-plt.plot(noise_reducer2.min_smooth_power_spectrum[0:noise_reducer2.idx_curr+1, idx])
-
-
-# def rolling_window_lastaxis(a, window):
-#     shape = a.shape[:-1] + (a.shape[-1] - window + 1, window)
-#     strides = a.strides + (a.strides[-1],)
-#     return np.lib.stride_tricks.as_strided(a, shape=shape, strides=strides)
-# rolling_window_lastaxis(a, 2)    
-
-# a = np.flipud(np.vstack((np.arange(9), 2*np.arange(9))).T)
-# 
-# a_strided = np.lib.stride_tricks.as_strided(a, shape=(3,2,5), strides=(a.strides[0]*2, a.strides[1], a.strides[0]))
-# mins = np.flipud(np.min(a_strided, axis=2))
-# a_strided.shape
-# 
-# 
-# a=1
+def test_noise_reduction():
+    '''
+    Run the online noise reduction for a sample track and plot both the raw audio
+    and the de-noised audio.
+    '''
+    import matplotlib.pyplot as plt
     
-# utils.write_wav(wd + "Ravel_JeuxDEau_008_20110315-SMD_denoised.wav", np.array(noise_reducer.audio_data_denoised), rate=utils.SR)
+    wd = utils.WD + "Samples\SaarlandMusicData\SaarlandMusicDataRecorded//"
+    filename_wav = wd + "Ravel_JeuxDEau_008_20110315-SMD.wav" #"Chopin_Op066_006_20100611-SMD.wav"
+    audio_data = (lb.core.load(filename_wav, sr = utils.SR, dtype=utils.AUDIO_FORMAT_MAP[utils.AUDIO_FORMAT_DEFAULT][0])[0]).astype(np.float64)
 
+    noise_reducer = NoiseReducer()
+    
+    for k in np.arange(3000):    
+        noise_reducer.main(audio_data[k*1024:k*1024 + 1024])
+        
+    utils.figure();
 
-
+    plt.plot(noise_reducer.audio_data)
+    plt.plot(noise_reducer.audio_data_denoised)
         
