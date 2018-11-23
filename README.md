@@ -48,6 +48,7 @@
 - https://github.com/craffel/midi-dataset (*Corresponds to Collin Raffel Thesis)
 - https://github.com/MTG/otmm_audio_score_alignment_dataset
 - https://github.com/mdeff/fma
+- http://www.cs.tut.fi/~heittolt/datasets
 
 ## Software Specifications
 - Fully featured software -> too much work possibly
