@@ -22,6 +22,101 @@ import tensorflow as tf
 
 FILENAME_INFO = "info.pkl"
 
+def get_config_features(sr, n_fft, hop_length):
+    '''
+    Get the list of all interesting features that can be used to fit the NN model.
+    ''' 
+    
+    diff = np.diff
+    pos_diff = lambda x: np.maximum(np.diff(x),0)
+    var = lambda x: np.array([[np.var(x)]])
+       
+    config_features = [                                                                             
+        {'fcn': lb.feature.chroma_stft, 'normalise':False, 'spectrum_based':True, 'spectrum_power':2, 
+         'fcn_kwargs':{'sr': sr, 'n_fft':n_fft, 'hop_length':hop_length, 'norm':2, 'n_chroma':84, 'tuning':0.0}},                       
+#         {'fcn': mfcc, 'normalise':True, 'spectrum_based':True, 'spectrum_power':2, 
+#          'fcn_kwargs':{'sr': sr, 'n_fft':n_fft, 'hop_length':hop_length}},
+        {'fcn': mfcc, 'normalise':False, 'spectrum_based':True, 'spectrum_power':2, 
+         'fcn_kwargs':{'sr': sr, 'n_fft':n_fft, 'hop_length':hop_length}},
+        {'fcn': spectral_flux, 'normalise':False, 'spectrum_based':True, 'spectrum_power':2, 
+         'fcn_kwargs':{'sr': sr, 'n_fft':n_fft, 'hop_length':hop_length}},       
+        {'fcn': lb.feature.chroma_stft, 'normalise':False, 'spectrum_based':True, 'spectrum_power':2, # TODO: ADD POST NORMALISATION
+         'fcn_kwargs':{'sr': sr, 'n_fft':n_fft, 'hop_length':hop_length, 'norm':None, 'n_chroma':84, 'tuning':0.0}},
+        {'fcn': raw_audio_fcn, 'normalise':False, 'spectrum_based':False, 'fcn_kwargs':{}},          
+                       
+                           
+        {'fcn': check_is_silence, 'normalise':False, 'spectrum_based':False, 'fcn_kwargs':{}},                                                                          
+        {'fcn': lb.feature.chroma_stft, 'normalise':False, 'spectrum_based':True, 'spectrum_power':2, 'post_process':pos_diff, 
+         'fcn_kwargs':{'sr': sr, 'n_fft':n_fft, 'hop_length':hop_length, 'norm':2, 'n_chroma':84, 'tuning':0.0}},                                                                                  
+        {'fcn': lb.feature.chroma_stft, 'normalise':False, 'spectrum_based':True, 'spectrum_power':2, 
+         'fcn_kwargs':{'sr': sr, 'n_fft':n_fft, 'hop_length':hop_length, 'norm':2, 'n_chroma':12, 'tuning':0.0}},                                       
+        {'fcn': lb.feature.spectral_centroid, 'normalise':False, 'spectrum_based':True, 'spectrum_power':1, 
+         'fcn_kwargs':{'sr': sr, 'n_fft':n_fft, 'hop_length':hop_length}},
+        {'fcn': lb.feature.spectral_bandwidth, 'normalise':False, 'spectrum_based':True, 'spectrum_power':1,
+         'fcn_kwargs':{'sr': sr, 'n_fft':n_fft, 'hop_length':hop_length, 'norm': True}},
+        {'fcn': lb.feature.spectral_rolloff, 'normalise':False, 'spectrum_based':True, 'spectrum_power':1,
+         'fcn_kwargs':{'sr': sr, 'n_fft':n_fft, 'hop_length':hop_length}},
+        {'fcn': lb.feature.zero_crossing_rate, 'normalise':False, 'spectrum_based':False,
+         'fcn_kwargs':{'frame_length':n_fft, 'hop_length':hop_length}},                       
+        {'fcn': lb.feature.chroma_stft, 'normalise':False, 'spectrum_based':True, 'spectrum_power':2, 'post_process':diff, 
+         'fcn_kwargs':{'sr': sr, 'n_fft':n_fft, 'hop_length':hop_length, 'norm':2, 'n_chroma':84, 'tuning':0.0}},                                                                                                                                                               
+        {'fcn': mfcc, 'normalise':True, 'spectrum_based':True, 'spectrum_power':2, 'post_process':diff,
+         'fcn_kwargs':{'sr': sr, 'n_fft':n_fft, 'hop_length':hop_length}},
+        {'fcn': mfcc, 'normalise':True, 'spectrum_based':True, 'spectrum_power':2, 'post_process':pos_diff,
+         'fcn_kwargs':{'sr': sr, 'n_fft':n_fft, 'hop_length':hop_length}},
+        {'fcn': lb.feature.zero_crossing_rate, 'normalise':False, 'spectrum_based':False, 'post_process':var,
+         'fcn_kwargs':{'frame_length':n_fft, 'hop_length':hop_length}},                                           
+        {'fcn': spectral_flux, 'normalise':False, 'spectrum_based':True, 'spectrum_power':2, 'post_process':var, 
+         'fcn_kwargs':{'sr': sr, 'n_fft':n_fft, 'hop_length':hop_length}},                                                                                                                                                                                         
+        ] 
+    
+    # Only return the config that works the best
+    config_features = config_features[0:3]
+#     config_features = [config_features[1]]
+#     config_features = [config_features[0], config_features[2]]
+#     config_features = [config_features[1]]
+    
+    return config_features
+
+def raw_audio_fcn(y):
+    '''
+    Wrapper to return the raw audio
+    '''
+    return y[np.newaxis,:]
+
+def mfcc(y, S, sr, n_fft, hop_length):
+    '''
+    Emulate the librosa MFCC function to accept the pre-computed power spectrum
+    '''
+        
+    S_new = lb.core.spectrum.power_to_db(lb.feature.melspectrogram(S=S, sr=sr, n_fft=n_fft, hop_length=hop_length))    
+    
+    return lb.feature.mfcc(sr=sr, S=S_new, n_fft=n_fft, hop_length=hop_length)
+
+def check_is_silence(y, threshold=-50, func=np.max):
+    '''
+    Check if the input is below the silence threshold
+    '''
+    db = 20 * np.log10(func(y))
+    is_silence = np.expand_dims(np.array([db < threshold], dtype=bool), axis=0)
+        
+    return(is_silence)
+
+def spectral_flux(y, S, sr, n_fft, hop_length):
+    '''
+    Calculate the spectral flux as an alternative feature
+    '''
+    # Normalise the power spectrum with L2 (only if S != 0)     
+    divisor = np.linalg.norm(S, ord=2, axis=0)
+    if np.all(divisor > 0.0):
+        S = np.divide(S, divisor)        
+     
+    # Compute the flux as the temporal change
+    flux = np.concatenate([np.zeros(1), np.linalg.norm(np.diff(S), ord=2, axis=0)])
+    
+    # Return as 2D array
+    return np.expand_dims(flux, axis=0)
+
 def add_noise(wav, snr):
     '''
     wav is the (uncorrupted) signal.
@@ -279,107 +374,6 @@ def main_build_dataset(wd, filename_audioset, filename_df_random_audioset):
     df_random_audioset.to_pickle(filename_df_random_audioset)
  
     return() 
- 
-# def audio_data_features_all(wd, df_info, sr, nb_sample, config_features):
-#     '''
-#     The function gets the audio data from disk and extract the relevant features 
-#     to input in the neural network. The nb sample variable correspond to the 
-#     exact number of samples we extract from the raw audio file (we start 
-#     from the beginning of the raw waveform). This is required as the NN only 
-#     understands fixed length features.  
-#     '''
-#     classification = []
-#     features = []
-#     filename_wav = []
-#     segment_nb = []
-#     idx = 0  
-#     print("Extracting samples features for MLP calibration")  
-#     for _, row in df_info.iterrows():
-#         idx += 1
-#         print("{}/{} done \r".format(idx, len(df_info))) 
-#         
-#         if row["valid"]:
-#             if isfile(row["filename_wav"]):           
-#                 audio_data_wav = lb.core.load(row["filename_wav"], sr = sr, dtype=utils.AUDIO_FORMAT_MAP[utils.AUDIO_FORMAT_DEFAULT][0])[0]
-# 
-#                 # Trim the leading silence if we expect music
-#                 if row['classification'] > 0:
-#                     first_valid = np.where(audio_data_wav > 0.05)[0]
-#                     audio_data_wav = audio_data_wav[first_valid[0]:len(audio_data_wav)] if len(first_valid) else np.zeros([0]) 
-#                 
-#                 for k in np.arange(0, len(audio_data_wav)-nb_sample, nb_sample):
-#                     audio_data_wav_tmp = audio_data_wav[k:k+nb_sample]
-#                     (features_one_sample, idxs_normalise) = get_features(audio_data_wav_tmp, nb_sample, config_features)
-#                     is_silence = check_is_silence(audio_data_wav_tmp)[0,0]
-#                     classification.append(int(row['classification']) if not is_silence else 0)                    
-#                     features.append(features_one_sample)                    
-#                     filename_wav.append(row['filename_wav'])
-#                     segment_nb.append(k)
-#                     
-#             else:
-#                 # All the files with row["valid"] = True should be there, 
-#                 # print if this is not he case
-#                 print("File {} is missing".format(row["filename_wav"]))
-# 
-#     classification = np.array(classification)
-#     features = np.vstack(features)
-#     
-#     # Normalise the features that need to
-#     means = np.expand_dims(np.mean(features[:,idxs_normalise], axis=0), axis=0)
-#     stds = np.expand_dims(np.std(features[:,idxs_normalise], axis=0), axis=0)
-#     features[:,idxs_normalise] = np.divide(features[:,idxs_normalise] - means, stds)
-#     features_info = {'means':means, 'stds':stds, 'idxs_normalise':idxs_normalise, 'filename_wav':filename_wav, 'segment_nb':segment_nb}
-#                 
-#     return((classification, features, features_info, ))
-
-# def get_features(audio_data_wav, nb_sample, config_features):
-#     
-#     assert len(audio_data_wav) == nb_sample, 'Length mismatch'
-#     
-#     # First, check if we need to get the STFT.    
-#     config_features_spectrum_based = [x for x in config_features if x["spectrum_based"]]
-#     any_spectrum_based = len(config_features_spectrum_based) > 0 
-#     
-#     # Compute the STFT if we need to
-#     if any_spectrum_based:
-#         n_ffts = [x['fcn_kwargs']["n_fft"] for x in config_features_spectrum_based]
-#         hop_lengths = [x['fcn_kwargs']["hop_length"] for x in config_features_spectrum_based]
-#         
-#         # Check if the config has been properly specified
-#         assert n_ffts[1:] == n_ffts[:-1]
-#         assert hop_lengths[1:] == hop_lengths[:-1]
-#         
-#         # Compute the magnitude spectrogram, it will be reused
-#         (S,_) = lb.spectrum._spectrogram(y=audio_data_wav, n_fft=n_ffts[0], hop_length=hop_lengths[0], power=1) 
-#         
-#         # Append the STFT to the kwargs
-#         for config in config_features:
-#             if config["spectrum_based"]:
-#                 config['fcn_kwargs']['S'] = S ** config['spectrum_power']          
-#     
-#     # Loop over the configs and actually compute the features
-#     features_one_sample = []
-#     idxs_normalise = []    
-#     for config in config_features:
-#         # Compute the features
-#         features_tmp = config['fcn'](y=audio_data_wav, **config['fcn_kwargs'])
-#         
-#         if 'post_process' in config:
-#             features_tmp = config['post_process'](features_tmp)
-#         
-#         # Flatten the features to 1D. Be careful, the reshaping should match how it was performed for the NN model.
-#         features_flat = np.reshape(features_tmp.T, features_tmp.shape[1] * features_tmp.shape[0])
-#         
-#         # Append the features
-#         features_one_sample.append(features_flat)
-#         
-#         # Keep the indices of the features we need to normalise
-#         idxs_normalise.append(np.ones(len(features_flat), dtype=bool) if config['normalise'] else np.zeros(len(features_flat), dtype=bool))
-#     
-#     features_one_sample = np.concatenate(features_one_sample)
-#     idxs_normalise = np.concatenate(idxs_normalise)
-#     
-#     return((features_one_sample, idxs_normalise))
 
 def audio_data_features_all(df_info, sr, nb_sample, config_features):
     '''
@@ -408,14 +402,21 @@ def audio_data_features_all(df_info, sr, nb_sample, config_features):
                     first_valid = np.where(audio_data_wav > 0.05)[0]
                     audio_data_wav = audio_data_wav[first_valid[0]:len(audio_data_wav)] if len(first_valid) else np.zeros([0]) 
                 
-                for k in np.arange(0, len(audio_data_wav)-nb_sample, nb_sample):
+                # Look over fixed-size segments
+                for k in np.arange(0, len(audio_data_wav)-nb_sample, nb_sample):                    
+                    
                     audio_data_wav_tmp = audio_data_wav[k:k+nb_sample]
-                    (features_one_sample, idxs_normalise) = get_features(audio_data_wav_tmp, nb_sample, config_features)
-                    is_silence = check_is_silence(audio_data_wav_tmp)[0,0]
-                    classification.append(int(row['classification']) if not is_silence else 0)                    
-                    features.append(features_one_sample)                    
-                    filename_wav.append(row['filename_wav'])
-                    segment_nb.append(k)
+                    
+                    # Don't process if we only have zeros
+                    if np.any(audio_data_wav_tmp > 0.0):
+                        
+                        # Don't include the silence in the music
+                        if (not check_is_silence(audio_data_wav_tmp)[0,0]) or int(row['classification']) == 0:
+                            (features_one_sample, idxs_normalise) = get_features(audio_data_wav_tmp, nb_sample, config_features)                    
+                            classification.append(int(row['classification']))                    
+                            features.append(features_one_sample)                    
+                            filename_wav.append(row['filename_wav'])
+                            segment_nb.append(k)
                     
             else:
                 # All the files with row["valid"] = True should be there, 
@@ -437,6 +438,10 @@ def audio_data_features_all(df_info, sr, nb_sample, config_features):
 def get_features(audio_data_wav, nb_sample, config_features):
     
     assert len(audio_data_wav) == nb_sample, 'Length mismatch'
+    
+    # Normalise the audio data to constant loudness
+    audio_data_max = np.max(audio_data_wav)
+    audio_data_wav = audio_data_wav / audio_data_max if audio_data_max > 0 else audio_data_wav # REMOVE, maybe!!!!!!!!
     
     # First, check if we need to get the STFT.    
     config_features_spectrum_based = [x for x in config_features if x["spectrum_based"]]
@@ -481,89 +486,6 @@ def get_features(audio_data_wav, nb_sample, config_features):
     
     return((features_one_sample, idxs_normalise))
         
-def get_config_features(sr, n_fft, hop_length):
-    '''
-    Get the list of all interesting features that can be used to fit the NN model.
-    ''' 
-    
-    diff = np.diff
-    pos_diff = lambda x: np.maximum(np.diff(x),0)
-    var = lambda x: np.array([[np.var(x)]])
-       
-    config_features = [                                                                             
-        {'fcn': lb.feature.chroma_stft, 'normalise':False, 'spectrum_based':True, 'spectrum_power':2, 
-         'fcn_kwargs':{'sr': sr, 'n_fft':n_fft, 'hop_length':hop_length, 'norm':2, 'n_chroma':84, 'tuning':0.0}},                       
-        {'fcn': mfcc, 'normalise':True, 'spectrum_based':True, 'spectrum_power':2, 
-         'fcn_kwargs':{'sr': sr, 'n_fft':n_fft, 'hop_length':hop_length}},
-        {'fcn': spectral_flux, 'normalise':False, 'spectrum_based':True, 'spectrum_power':2, 
-         'fcn_kwargs':{'sr': sr, 'n_fft':n_fft, 'hop_length':hop_length}},       
-        {'fcn': lb.feature.chroma_stft, 'normalise':False, 'spectrum_based':True, 'spectrum_power':2, # TODO: ADD POST NORMALISATION
-         'fcn_kwargs':{'sr': sr, 'n_fft':n_fft, 'hop_length':hop_length, 'norm':None, 'n_chroma':84, 'tuning':0.0}},
-                       
-                           
-        {'fcn': check_is_silence, 'normalise':False, 'spectrum_based':False, 'fcn_kwargs':{}},                                                                          
-        {'fcn': lb.feature.chroma_stft, 'normalise':False, 'spectrum_based':True, 'spectrum_power':2, 'post_process':pos_diff, 
-         'fcn_kwargs':{'sr': sr, 'n_fft':n_fft, 'hop_length':hop_length, 'norm':2, 'n_chroma':84, 'tuning':0.0}},                                                                                  
-        {'fcn': lb.feature.chroma_stft, 'normalise':False, 'spectrum_based':True, 'spectrum_power':2, 
-         'fcn_kwargs':{'sr': sr, 'n_fft':n_fft, 'hop_length':hop_length, 'norm':2, 'n_chroma':12, 'tuning':0.0}},                                       
-        {'fcn': lb.feature.spectral_centroid, 'normalise':False, 'spectrum_based':True, 'spectrum_power':1, 
-         'fcn_kwargs':{'sr': sr, 'n_fft':n_fft, 'hop_length':hop_length}},
-        {'fcn': lb.feature.spectral_bandwidth, 'normalise':False, 'spectrum_based':True, 'spectrum_power':1,
-         'fcn_kwargs':{'sr': sr, 'n_fft':n_fft, 'hop_length':hop_length, 'norm': True}},
-        {'fcn': lb.feature.spectral_rolloff, 'normalise':False, 'spectrum_based':True, 'spectrum_power':1,
-         'fcn_kwargs':{'sr': sr, 'n_fft':n_fft, 'hop_length':hop_length}},
-        {'fcn': lb.feature.zero_crossing_rate, 'normalise':False, 'spectrum_based':False,
-         'fcn_kwargs':{'frame_length':n_fft, 'hop_length':hop_length}},                       
-        {'fcn': lb.feature.chroma_stft, 'normalise':False, 'spectrum_based':True, 'spectrum_power':2, 'post_process':diff, 
-         'fcn_kwargs':{'sr': sr, 'n_fft':n_fft, 'hop_length':hop_length, 'norm':2, 'n_chroma':84, 'tuning':0.0}},                                                                                                                                                               
-        {'fcn': mfcc, 'normalise':True, 'spectrum_based':True, 'spectrum_power':2, 'post_process':diff,
-         'fcn_kwargs':{'sr': sr, 'n_fft':n_fft, 'hop_length':hop_length}},
-        {'fcn': mfcc, 'normalise':True, 'spectrum_based':True, 'spectrum_power':2, 'post_process':pos_diff,
-         'fcn_kwargs':{'sr': sr, 'n_fft':n_fft, 'hop_length':hop_length}},
-        {'fcn': lb.feature.zero_crossing_rate, 'normalise':False, 'spectrum_based':False, 'post_process':var,
-         'fcn_kwargs':{'frame_length':n_fft, 'hop_length':hop_length}},                                           
-        {'fcn': spectral_flux, 'normalise':False, 'spectrum_based':True, 'spectrum_power':2, 'post_process':var, 
-         'fcn_kwargs':{'sr': sr, 'n_fft':n_fft, 'hop_length':hop_length}},                                                                                                                                                                                         
-        ] 
-    
-    # Only return the config that works the best
-    config_features = config_features[0:3] 
-#     config_features = [config_features[1]]
-    
-    return config_features
-
-def mfcc(y, S, sr, n_fft, hop_length):
-    '''
-    Emulate the librosa MFCC function to accept the pre-computed power spectrum
-    '''
-        
-    S_new = lb.core.spectrum.power_to_db(lb.feature.melspectrogram(S=S, sr=sr, n_fft=n_fft, hop_length=hop_length))    
-    
-    return lb.feature.mfcc(sr=sr, S=S_new, n_fft=n_fft, hop_length=hop_length)
-
-def check_is_silence(y, threshold=-50, func=np.max):
-    '''
-    Check if the input is below the silence threshold
-    '''
-    db = 20 * np.log10(func(y))
-    is_silence = np.expand_dims(np.array([db < threshold], dtype=bool), axis=0)
-        
-    return(is_silence)
-
-def spectral_flux(y, S, sr, n_fft, hop_length):
-    '''
-    Calculate the spectral flux as an alternative feature
-    '''
-    # Normalise the power spectrum with L2 (only if S != 0)     
-    divisor = np.linalg.norm(S, ord=2, axis=0)
-    if np.all(divisor > 0.0):
-        S = np.divide(S, divisor)        
-     
-    # Compute the flux as the temporal change
-    flux = np.concatenate([np.zeros(1), np.linalg.norm(np.diff(S), ord=2, axis=0)])
-    
-    # Return as 2D array
-    return np.expand_dims(flux, axis=0)
 
 def train_model(y, X, model_type):
     '''
