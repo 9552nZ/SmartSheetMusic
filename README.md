@@ -41,6 +41,7 @@
 - https://link.springer.com/chapter/10.1007/978-3-642-16773-7_12
 - http://citeseerx.ist.psu.edu/viewdoc/download?doi=10.1.1.96.2112&rep=rep1&type=pdf
 - http://www.covic.otago.ac.nz/~jdeng/print/smcb08_preprint.pdf
+- http://www.ece.mcgill.ca/~bchamp/Theses/PhDTheses/Chu2008.pdf
 
 ## Audio Databases
 - https://staff.aist.go.jp/m.goto/RWC-MDB/
