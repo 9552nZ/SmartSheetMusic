@@ -42,6 +42,7 @@
 - http://citeseerx.ist.psu.edu/viewdoc/download?doi=10.1.1.96.2112&rep=rep1&type=pdf
 - http://www.covic.otago.ac.nz/~jdeng/print/smcb08_preprint.pdf
 - http://www.ece.mcgill.ca/~bchamp/Theses/PhDTheses/Chu2008.pdf
+- https://arxiv.org/pdf/1604.06338.pdf
 
 ## Audio Databases
 - https://staff.aist.go.jp/m.goto/RWC-MDB/
