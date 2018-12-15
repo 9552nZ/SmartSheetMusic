@@ -404,7 +404,8 @@ def youtube_download_audio(yt_id, start_sec, length_sec, filename_wav_out):
     An example in cmd for comparison:
     1) "C:/Program Files (x86)/ffmpeg/bin/youtube-dl.exe" -g "https://youtube.com/watch?v=TP9luRtEqjc" --quiet --extract-audio
     2) Get the ouput of the above and replace {} with it:    
-    "C:/Program Files (x86)/ffmpeg/bin/ffmpeg.exe" -ss 0:00:10 -i "{}" -t 0:01:40 -acodec pcm_s16le -ac 1 -ar 16000 C:\\Users\\Alexis\\Business\\SmartSheetMusic\\Samples\\blopp.wav
+    "C:/Program Files (x86)/ffmpeg/bin/ffmpeg.exe" -ss 0:00:10 -i "{}" -t 0:01:40 -acodec pcm_s16le -ac 1 -ar 16000 C:\\Users\\Alexis\\Business\\SmartSheetMusic\\Samples\\blopp.wav    
+    
     
     Parameters
     ----------
@@ -426,7 +427,12 @@ def youtube_download_audio(yt_id, start_sec, length_sec, filename_wav_out):
         False if the youtube-dl command has failed. True otherwise.
     '''
     
+   
     from subprocess import check_output, call
+    import sys
+    
+    if sys.version_info[0] >= 3:
+        raise Exception("Must be using Python 2")
     
     # Sample rate for the output ".wav" file
     sr = SR
@@ -485,6 +491,41 @@ def convert_audio_file(filename_in, filename_wav_out, sr):
     call(ffmpeg_command)
     
     return
+
+def slice_audio(df, nb_sec_slice, sr=SR):
+    '''
+    Take a dataframe of (lengthy) audio files and slice them into smaller chunks.
+    '''
+    import librosa as lb
+    import pandas as pd
+     
+    from ntpath import dirname    
+    
+    audio_data_all = []
+    for idx, row in df.iterrows():
+        audio_data_all.append((lb.core.load(row['filename_wav'], sr=sr, dtype=AUDIO_FORMAT_MAP[AUDIO_FORMAT_DEFAULT][0])[0]))
+
+    hop_length = nb_sec_slice*sr    
+    cnt = 0
+    filename_wav_all = []
+    classification_all = []
+    valid_all = []
+    for idx, row in df.iterrows():    
+        root = dirname(row['filename_wav'])
+        for k in np.arange(0, len(audio_data_all[idx]), hop_length):    
+            audio_data_tmp = audio_data_all[idx][k:(k+hop_length)]
+            filename_wav_new = root + "\\sample_{}.wav".format(cnt)
+            lb.output.write_wav(filename_wav_new, audio_data_tmp, sr, norm=False)
+            filename_wav_all.append(filename_wav_new)
+            classification_all.append(row['classification'])
+            valid_all.append(row['valid'])
+            cnt += 1
+            
+    df_new = pd.DataFrame({'classification':classification_all, 
+                          'filename_wav':filename_wav_all, 
+                          'valid':valid_all})
+            
+    return(df_new)
 
 def calc_nb_segment_stft(hop_length, nb_sample):
     '''
@@ -586,7 +627,7 @@ def start_and_record(filename, filename_new, sr=SR):
     # Without it, we would wait for the output of the command.
     DETACHED_PROCESS = 0x00000008    
     
-    # Find the lenghts (in secs) of the target wave file.
+    # Find the lengths (in secs) of the target wave file.
     record_length = get_length_audio_file(filename)    
     
     # Launch the wav via MPC.
