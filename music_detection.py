@@ -5,22 +5,17 @@ os.environ['LIBROSA_CACHE_DIR'] = '/tmp/librosa_cache' # Enable librosa cache
 import librosa as lb
 import utils_audio_transcript as utils
 from csv import reader
-from pickle import load, dump, HIGHEST_PROTOCOL
+from pickle import load, dump
 from os.path import isfile 
-from sklearn.neural_network import MLPClassifier
-from sklearn.svm import SVC
-from sklearn.model_selection import train_test_split
-from sklearn.metrics import classification_report
-from sklearn.metrics import confusion_matrix
 from ntpath import basename
 # from subprocess import Popen
 from time import sleep
 from shutil import copyfile
 from keras.models import load_model
-import tensorflow as tf
-
 
 FILENAME_INFO = "info.pkl"
+WD = utils.WD + "Samples\\"
+SR = utils.SR 
 
 def get_config_features(sr, n_fft, hop_length, idxs=[0,1,2]):
     '''
@@ -344,7 +339,7 @@ def main_calibrate_sound_level(wd):
     
     avgs, db_avgs, db_maxs = ([] for i in range(3))
     for idx, row in df_audioset.iterrows():            
-        audio_data_wav = lb.core.load(row["filename_wav"], sr = utils.SR, dtype=utils.AUDIO_FORMAT_MAP[utils.AUDIO_FORMAT_DEFAULT][0])[0]
+        audio_data_wav = lb.core.load(row["filename_wav"], sr = SR, dtype=utils.AUDIO_FORMAT_MAP[utils.AUDIO_FORMAT_DEFAULT][0])[0]
         idx = 0        
         while idx+hop_size < len(audio_data_wav):
             audio_data_wav_tmp = audio_data_wav[idx:idx+hop_size]
@@ -367,7 +362,7 @@ def main_calibrate_sound_level(wd):
     # Start listening
     stream = audio.open(format=utils.AUDIO_FORMAT_MAP[audio_format][1], 
                         channels=channels,
-                        rate=utils.SR, 
+                        rate=SR, 
                         input=True,
                         frames_per_buffer=chunk)
         
@@ -664,6 +659,8 @@ def train_model(X, y, X_pure_test, y_pure_test):
     
     from keras.callbacks import ModelCheckpoint
     from sklearn.utils import class_weight
+    from sklearn.model_selection import train_test_split
+    from sklearn.metrics import classification_report    
     
     X_train, X_test, y_train, y_test = train_test_split(X, y)
     
@@ -682,8 +679,8 @@ def train_model(X, y, X_pure_test, y_pure_test):
     model.summary()     
                              
     # Fit (to get better performance on X_pure_test, we may need to only do 2 or 3 epochs...)                                                                     
-#     model.fit(X_train, y_train, validation_split=0.2, batch_size=500, epochs=300, class_weight=class_weights, callbacks=[checkpointer])
-    model.fit(X_train, y_train, validation_split=0.2, batch_size=500, epochs=3, class_weight=class_weights, callbacks=[checkpointer])
+    model.fit(X_train, y_train, validation_split=0.2, batch_size=500, epochs=300, class_weight=class_weights, callbacks=[checkpointer])
+#     model.fit(X_train, y_train, validation_split=0.2, batch_size=500, epochs=3, class_weight=class_weights, callbacks=[checkpointer])
     
     model.load_weights(checkpoint_path)
     
@@ -704,9 +701,6 @@ def main_build_model(wd, sr, nb_sample, config_features):
     df_test = build_df_audio_data("test")
     
     # Extract the features and the classifications
-    nb_sample = 12288 
-    sr = utils.SR
-    config_features = get_config_features(utils.SR, 1024, 512, idxs=[0,1,2])
     (y, X, features_info) = audio_data_features_all(df_train, sr, nb_sample, config_features)
     (y_pure_test, X_pure_test, _) = audio_data_features_all(df_test, sr, nb_sample, config_features)
        
@@ -716,12 +710,14 @@ def main_build_model(wd, sr, nb_sample, config_features):
     return(model, features_info)
          
 class MusicDetecter():
-    def __init__(self, wd, sr, force_rebuild=False):
+    def __init__(self, force_rebuild=False):
          
+        wd = WD
+        sr = SR
         filename_model = wd + "music_recognition_model.h5"
         filename_model_info = wd + "music_recognition_model_info.pkl"     
         nb_sample = 12288
-        self.config_features = get_config_features(utils.SR, 1024, 512) # Set to lower values to get meaningful stddev
+        self.config_features = get_config_features(sr, 1024, 512, idxs=[0,1,2]) # Set to lower values to get meaningful stddev
          
         # If the model does not exists on disk, re-buid it and store it
         if not isfile(filename_model) or force_rebuild:
@@ -743,11 +739,24 @@ class MusicDetecter():
         # Check that the model is as expected
         if self.sr != sr or self.nb_sample != nb_sample:
             raise ValueError("The input parameters do not match with the ones of the model stored on the disk.")
+        
+        # Initialise the placeholders for reporting/analysis
+        self.init_placeholders()
+        
+    def init_placeholders(self):
          
         # Set placeholder for the features and the predictions
         self.features = None
         self.predictions = []
         self.audio_data = None
+        
+    def __getstate__(self):
+        '''
+        Called by pickle.dump to know what attributes need to be pickled. 
+        Don't pickle the model (Keras models not picklable).
+        '''
+        keys_not_picklable = ['model']
+        return {k: v for k, v in self.__dict__.items() if k not in keys_not_picklable}
         
     def get_normalised_features(self, audio_data):
         
@@ -786,4 +795,4 @@ class MusicDetecter():
         return(music_detected, diagnostic)
     
 if __name__ == '__main__':                       
-    music_detecter = MusicDetecter(utils.WD + "Samples\\" , utils.SR)
+    music_detecter = MusicDetecter()

@@ -641,7 +641,30 @@ def start_and_record(filename, filename_new, sr=SR):
            sr=sr, 
            audio_format="int16", 
            save=True, 
-           filename_wav_out=filename_new)            
+           filename_wav_out=filename_new)     
+    
+def remove_silence(y, threshold=-50, nb_sample=4096):
+    """
+    Remove the silence parts of an audio signal.
+    The procedure assumes that we have a good-quality recording.
+    (1) Calculate the nb_sample-point maximum of the abs signal (envelope)
+    (2) Remove the signal if the envelope is lower than the target threshold.
+    """ 
+    from scipy.ndimage.filters import maximum_filter1d 
+          
+    if np.max(y) != 1.0:
+        raise ValueError("Input signal is expected to be normalised to 1")
+    
+    # Ignore log(0) warnings
+    np.seterr(divide = 'ignore')    
+    y_db = 20 * np.log10(np.abs(y))
+    np.seterr(divide = 'warn') 
+    
+    y_envelope = maximum_filter1d(y_db, nb_sample)    
+    mask = y_envelope >= threshold
+    y_out = y[mask]
+    
+    return(y_out)    
 
 def get_length_audio_file(filename):
     '''

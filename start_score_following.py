@@ -17,10 +17,10 @@ from time import sleep
 import utils_audio_transcript as utils
 from score_following import Matcher
 from music_detection import MusicDetecter
-from pandas import DataFrame
+# from pandas import DataFrame
 import os # REMOVE
-import datetime # REMOVE
-import multiprocessing # REMOVE
+# import datetime # REMOVE
+# import multiprocessing # REMOVE
 
 # Flag for the communication with the GUI
 # TODO : Replace by integers
@@ -43,7 +43,7 @@ class MatcherManager():
         self.sr = utils.SR # Sample rate
         self.hop_length = utils.HOP_LENGTH 
         self.audio_format = utils.AUDIO_FORMAT_DEFAULT # The low-level audio format 
-        self.detect_music = False # Set to true to only start once the MLP has detected music
+        self.detect_music = True # Set to true to only start once the MLP has detected music
         self.callback_fcn = callback_fcn # The pyaudio callback function  
         
         # Start the publishing socket
@@ -58,14 +58,12 @@ class MatcherManager():
                                compute_chromagram_fcn_kwargs={'n_fft':self.hop_length*2, 'n_chroma':12})
         
         # Initialise the audio data buffer
-        self.audio_data = np.array([])
-        
-        self.audio_data2 = np.array([]) # REMOVE
+        self.audio_data = np.array([])    
      
         # Initialise the music detecter
         self.music_detection_diagnostic = ''
         if self.detect_music:
-            self.music_detecter = MusicDetecter(utils.WD_AUDIOSET + "VerifiedDataset\\VerifiedDatasetRecorded\\", self.sr)    
+            self.music_detecter = MusicDetecter()    
         
         # Start the pyaudio stream 
         self.start_stream()
@@ -79,7 +77,8 @@ class MatcherManager():
         Called by pickle.dump to know what attributes need to be pickled. 
         Pickle everything but the sockets and pyaudio.
         '''
-        return {k: v for k, v in self.__dict__.items() if k not in ['socket_pub', 'socket_sub', 'socket_req_init', 'pyaudio', 'stream', 'callback_fcn']}
+        keys_not_picklable = ['socket_pub', 'socket_sub', 'socket_req_init', 'pyaudio', 'stream', 'callback_fcn']
+        return {k: v for k, v in self.__dict__.items() if k not in keys_not_picklable}
     
         
     def reinit(self):
@@ -98,6 +97,11 @@ class MatcherManager():
         
         self.matcher.midi_obj = midi_obj 
         self.status = STOP
+        
+        # Re-initialise the music detecter
+        self.music_detection_diagnostic = ''
+        if self.detect_music:
+            self.music_detecter.init_placeholders()    
  
     def bind_sockets(self):
         '''
@@ -168,7 +172,7 @@ class MatcherManager():
         # TODO : move to update_status_matcher()
         if self.detect_music:
             self.audio_data = np.append(self.audio_data, new_audio_data)        
-            self.audio_data = self.audio_data[max(len(self.audio_data)-self.music_detecter.model.nb_sample, 0):len(self.audio_data)]
+            self.audio_data = self.audio_data[max(len(self.audio_data)-self.music_detecter.nb_sample, 0):len(self.audio_data)]
         
         # Check the status
         self.update_status_matcher()
@@ -184,12 +188,19 @@ class MatcherManager():
         Send the current position to the GUI via the socket.
         '''
         # Disable the logging for now, as it causes delays on the front-end side
-#         root_str = "Sending current position: {}         Status: {}({})"
-#         print(root_str.format(self.matcher.position_tick, self.status_matcher, self.music_detection_diagnostic))
+        root_str = "Sending current position: {} ({:.1f}s)         Status: {}({})".format(
+            self.matcher.position_tick,
+            self.matcher.positions_sec[-1] if len(self.matcher.positions_sec)>0 else 0.0,
+            self.status_matcher, 
+            self.music_detection_diagnostic)
+                        
+        print(root_str)
         
         # Need to be careful when sending the bytes representation of an int
         # The bytes functions behaves differently in python 2 vs python 3.                   
-        self.socket_pub.send_string(str(self.matcher.position_tick))
+        # Send the position in millisec (alternatively, use self.matcher.position_tick for the midi ticks).
+        position_millisec = int(self.matcher.positions_sec[-1]*1000.0) if len(self.matcher.positions_sec)>0 else 0
+        self.socket_pub.send_string(str(position_millisec))
             
                 
     def save(self):
@@ -200,7 +211,6 @@ class MatcherManager():
         
         filename_output = utils.WD + 'ScoreFollowingLogs\matcher.pkl' 
         file_output = open(filename_output, 'wb')
-        
         dump(self, file_output)
         
         print('MatcherManager stored in {}'.format(filename_output))
@@ -223,7 +233,7 @@ class MatcherManager():
             flag = self.status
             
         # Check if we have attained the end of the act features
-        reached_end_act = len(self.matcher.positions) > 0 and self.matcher.positions[-1] >= self.matcher.nb_obs_feature_act
+        reached_end_act = len(self.matcher.positions) > 0 and self.matcher.positions[-1] >= self.matcher.nb_frames_feature_act
         flag = STOP if reached_end_act else flag  
                         
         if self.status == STOP and flag == STOP:
@@ -255,12 +265,13 @@ def callback(in_data, frame_count, time_info, flag):
     return (None, pyaudio.paContinue)
             
 if __name__ == '__main__':    
+    
     # Input the target '.mid' file of the score that we want to follow 
     if len(sys.argv) > 1:
         filename_mid = sys.argv[1]
         callback_fcn = MatcherManager.callback        
     else:
-        filename_mid = utils.WD + '\Samples\IMSLP//' +  'Beethoven_Moonlight_Sonata_Op._27_No._2_Mvt._2.wav'
+        filename_mid = r'C:\Users\Alexis\Source\seescore\xml samples/35882-Fur_Elise_by_Ludwig_Van_Beethoven.mid'
         callback_fcn = MatcherManager.callback_main
      
     matcher_manager = MatcherManager(filename_mid, callback_fcn)
@@ -268,7 +279,8 @@ if __name__ == '__main__':
     
     while matcher_manager.stream.is_active():
         matcher_manager.publish_position()
-        sleep(matcher_manager.chunk/float(matcher_manager.sr))
+#         sleep(matcher_manager.chunk/float(matcher_manager.sr))
+        sleep(0.5)
                 
     matcher_manager.stream.stop_stream()
     matcher_manager.stream.close()    
