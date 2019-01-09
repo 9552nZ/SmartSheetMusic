@@ -55,15 +55,16 @@ class MatcherManager():
      
         # Initialise the matcher
         self.matcher = Matcher(self.wd, self.filename, self.sr, self.hop_length, 
-                               compute_chromagram_fcn_kwargs={'n_fft':self.hop_length*2, 'n_chroma':12})
-        
-        # Initialise the audio data buffer
-        self.audio_data = np.array([])    
+                               compute_chromagram_fcn_kwargs={'n_fft':self.hop_length*2, 'n_chroma':12})                    
      
         # Initialise the music detecter
         self.music_detection_diagnostic = ''
+        self.music_detected_all = []
         if self.detect_music:
-            self.music_detecter = MusicDetecter()    
+            self.music_detecter = MusicDetecter()              
+            
+        # Initialise the audio data buffer
+        self.audio_data = np.array([])
         
         # Start the pyaudio stream 
         self.start_stream()
@@ -98,10 +99,12 @@ class MatcherManager():
         self.matcher.midi_obj = midi_obj 
         self.status = STOP
         
-        # Re-initialise the music detecter
+        # Clear the audio history
+        self.audio_data = np.array([])
+        
+        # Re-initialise the music detection diagnostic
         self.music_detection_diagnostic = ''
-        if self.detect_music:
-            self.music_detecter.init_placeholders()    
+        self.music_detected_all = []   
  
     def bind_sockets(self):
         '''
@@ -147,9 +150,13 @@ class MatcherManager():
         Check if we should start the matching procedure.
         The function ensures that music has been detected.        
         '''
+         
+        # Run the music detection procedure on the most recent samples   
+        if self.detect_music: 
+            audio_data_tmp = self.audio_data[max(len(self.audio_data)-self.music_detecter.nb_sample, 0):len(self.audio_data)]                       
+            music_detected, self.music_detection_diagnostic = self.music_detecter.detect(audio_data_tmp)
             
-        if self.detect_music:                        
-            music_detected, self.music_detection_diagnostic = self.music_detecter.detect(self.audio_data)
+            self.music_detected_all.append(music_detected)
                     
             if music_detected and self.status_matcher == PAUSE:
                 self.status_matcher = MATCH
@@ -168,11 +175,8 @@ class MatcherManager():
         # Start by converting the input string to numpy array
         new_audio_data = np.fromstring(new_audio_data, dtype=utils.AUDIO_FORMAT_MAP[self.audio_format][0])
         
-        # Keep a local buffer (we keep as many samples as the music detection procedure requires)
-        # TODO : move to update_status_matcher()
-        if self.detect_music:
-            self.audio_data = np.append(self.audio_data, new_audio_data)        
-            self.audio_data = self.audio_data[max(len(self.audio_data)-self.music_detecter.nb_sample, 0):len(self.audio_data)]
+        # Keep the entire history of audio_data (not required, we could only keep the last few samples)        
+        self.audio_data = np.append(self.audio_data, new_audio_data)        
         
         # Check the status
         self.update_status_matcher()
@@ -201,8 +205,7 @@ class MatcherManager():
         # Send the position in millisec (alternatively, use self.matcher.position_tick for the midi ticks).
         position_millisec = int(self.matcher.positions_sec[-1]*1000.0) if len(self.matcher.positions_sec)>0 else 0
         self.socket_pub.send_string(str(position_millisec))
-            
-                
+                            
     def save(self):
         '''
         Store the MatcherManager
@@ -211,7 +214,7 @@ class MatcherManager():
         
         filename_output = utils.WD + 'ScoreFollowingLogs\matcher.pkl' 
         file_output = open(filename_output, 'wb')
-        dump(self, file_output)
+        dump(self, file_output)        
         
         print('MatcherManager stored in {}'.format(filename_output))
             
@@ -276,11 +279,11 @@ if __name__ == '__main__':
      
     matcher_manager = MatcherManager(filename_mid, callback_fcn)
     matcher_manager.socket_req_init.send(INIT)        
-    
+     
     while matcher_manager.stream.is_active():
         matcher_manager.publish_position()
 #         sleep(matcher_manager.chunk/float(matcher_manager.sr))
         sleep(0.5)
-                
+                 
     matcher_manager.stream.stop_stream()
     matcher_manager.stream.close()    
