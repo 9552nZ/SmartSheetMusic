@@ -17,7 +17,9 @@ class OnlineLocalDTW():
     """
     def __init__(self,
                  features_act,
-                 nb_frames_dtw_est,  
+                 dtw_fcn, 
+                 distance_local_fcn,
+                 nb_frames_dtw_est,                   
                  diag_cost=1.0):                
         
         # Input features, the ones we want to track
@@ -37,6 +39,8 @@ class OnlineLocalDTW():
         self.idx_est = -1
 
         # DTW parameters
+        self.dtw_fcn = dtw_fcn
+        self.distance_local_fcn = distance_local_fcn
         self.nb_frames_dtw_est = nb_frames_dtw_est 
         self.diag_cost = diag_cost
         self.weights_mul = np.array([1.0*diag_cost, 1.0, 1.0])                  
@@ -70,13 +74,13 @@ class OnlineLocalDTW():
         
         # Update the distance matrix 
         # We use the L2 norm to compute the local distance (frame / frame) 
-        self.distance[:, self.idx_est] = np.reshape(cdist(self.features_act, np.atleast_2d(features_est_new)),-1,1)
+        self.distance[:, self.idx_est] = np.reshape(self.distance_local_fcn(self.features_act, np.atleast_2d(features_est_new)),-1,1)
         
         # Extract the distance block that we care about
         distance_tmp = self.distance[idx_act_lb:idx_act_ub+1, max(self.idx_est-self.nb_frames_dtw_est+1, 0):self.idx_est+1]
         
         # Run the DTW with subsequence alignment (cython)
-        cum_distance_tmp = dtw_fast(np.array(distance_tmp, dtype=np.float64) , self.weights_mul, 1, max_consecutive_steps)
+        cum_distance_tmp = self.dtw_fcn(np.array(distance_tmp, dtype=np.float64) , self.weights_mul, 1, max_consecutive_steps)
         
         # Keep the last column of the alignment distance only 
         cum_distance_last = cum_distance_tmp[:,-1]
@@ -89,13 +93,13 @@ class MatcherFilter():
     Also compute the search bounds for the DTW.
     '''
     
-    def __init__(self, nb_frames_act, nb_frames_dtw_est, nb_frames_dtw_act):
+    def __init__(self, nb_frames_act, nb_frames_dtw_est, nb_frames_dtw_act, max_consecutive_steps, random_distance_threshold):
                     
         # Number of obs in the act features
         self.nb_frames_act = nb_frames_act
         
-        # Speed is the nb of act frames processed for one est frame
-        self.speed = 1.0         
+        # Speed is the nb of act frames processed for one est frame        
+        self.speed = 1.0
         self.min_speed = 1.0/3.0
         self.max_speed = 3.0      
         self.nb_frames_speed_estimate = 50        
@@ -117,7 +121,7 @@ class MatcherFilter():
         # The local step constraints for the DTW, that is, the maximum number
         # of consecutive step that we can do in either the est of the act direction.
         self.max_consecutive_steps_init = 1000
-        self.max_consecutive_steps_real = 3
+        self.max_consecutive_steps_real = max_consecutive_steps
         self.max_consecutive_steps = self.max_consecutive_steps_init    
         
         # We only want to apply the local constraint once the following
@@ -127,7 +131,8 @@ class MatcherFilter():
         
         # Confidence calculation parameters
         self.nb_frames_confidence_estimate = [30, 50, 100]
-        self.high_confidence_alignment = False               
+        self.high_confidence_alignment = False     
+        self.random_distance_threshold = random_distance_threshold
         
     def update_speed(self):
         '''
@@ -210,13 +215,19 @@ class MatcherFilter():
         nearest_position_tmp = np.nanargmin(np.abs(curr_position - relative_mins_idxs))
         nearest_position_idx = relative_mins_idxs[nearest_position_tmp]
         nearest_position_value = relative_mins_values[nearest_position_tmp]
-        # TODO : COMMENT AND REMOVE FIXED VALUE
-        if self.high_confidence_alignment and nearest_position_value < 37:            
-            position_filtered_new = nearest_position_idx             
+        
+        # TODO : COMMENT
+        if self.high_confidence_alignment and nearest_position_value < self.random_distance_threshold:            
+            position_filtered_new = nearest_position_idx   
+            alignment_quality = nearest_position_value / self.random_distance_threshold   # REMOVE?
         else:
-            position_filtered_new = relative_mins_idxs[np.nanargmin(relative_mins_values)]
-         
-        self.positions_filtered.append(position_filtered_new)         
+            argmin = np.nanargmin(relative_mins_values)
+            position_filtered_new = relative_mins_idxs[argmin]
+            alignment_quality = relative_mins_values[argmin] / self.random_distance_threshold  # REMOVE?
+            
+        self.positions_filtered.append(position_filtered_new)
+        
+        print(alignment_quality)         
         
     def main_filter(self, cum_distance):
         '''
@@ -297,36 +308,56 @@ class Matcher():
         max_consecutive_steps = 3
         dtw_fcn = dtw_fast
         distance_local_fcn = cdist
-        self.dtw = OnlineLocalDTW(chromagram_act, nb_frames_dtw_est)
+        self.dtw = OnlineLocalDTW(chromagram_act, dtw_fcn, distance_local_fcn, nb_frames_dtw_est)
+        
+        random_distance_threshold = self.calibrate_distance_confidence_level(wd, chromagram_act, dtw_fcn, distance_local_fcn,  
+                                                                             nb_frames_dtw_act, nb_frames_dtw_est, max_consecutive_steps)
         
         # Initialise the filter
-        self.filter = MatcherFilter(self.nb_frames_feature_act, nb_frames_dtw_est, nb_frames_dtw_act)
+        self.filter = MatcherFilter(self.nb_frames_feature_act, 
+                                    nb_frames_dtw_est, 
+                                    nb_frames_dtw_act, 
+                                    max_consecutive_steps, 
+                                    random_distance_threshold)
+                                           
+    def calibrate_distance_confidence_level(self, wd, chromagram_act, dtw_fcn, distance_local_fcn, 
+                                            nb_frames_dtw_act, nb_frames_dtw_est, max_consecutive_steps):
+        """
+        """
         
-        # TODO : PUT IN PROPER FUNCTION, COMMENT AND STORE THE CHROMAGRAM
-        samples_idxs = [4,12,21,28,36,37,45,48,51,52,53,54,59,61,69,75,76,87,89,91]
-        wd_samples = utils.WD_AUDIOSET + r"VerifiedDataset//VerifiedDatasetRecorded//"
-        nb_frames_per_sample = 100
-        chromagram_sample = np.empty([nb_frames_per_sample*len(samples_idxs), chromagram_act.shape[1]])
+        filename_chromagram_sample = "{}sample_chromagram.npy".format(wd)
         
-        for k, idx in enumerate(samples_idxs):            
-            audio_data_sample = lb.core.load("{}sample_{}.wav".format(wd_samples, idx), sr = self.sr)[0]
-            chromagram_sample_tmp = self.compute_chromagram(audio_data_sample)  
-            chromagram_sample[k*nb_frames_per_sample:(k+1)*nb_frames_per_sample, :] = chromagram_sample_tmp[0:nb_frames_per_sample, :] 
+        if not os.path.isfile(filename_chromagram_sample):
+        
+            samples_idxs = [4,12,21,28,36,37,45,48,51,52,53,54,59,61,69,75,76,87,89,91]
+            wd_samples = utils.WD_AUDIOSET + r"VerifiedDataset//VerifiedDatasetRecorded//"
+            nb_frames_per_sample = 100
+            chromagram_sample = np.empty([nb_frames_per_sample*len(samples_idxs), chromagram_act.shape[1]])
+            
+            for k, idx in enumerate(samples_idxs):            
+                audio_data_sample = lb.core.load("{}sample_{}.wav".format(wd_samples, idx), sr = self.sr)[0]
+                chromagram_sample_tmp = self.compute_chromagram(audio_data_sample)  
+                chromagram_sample[k*nb_frames_per_sample:(k+1)*nb_frames_per_sample, :] = chromagram_sample_tmp[0:nb_frames_per_sample, :]
+                
+        else:
+            chromagram_act = np.load(filename_chromagram_sample) 
                 
         nb_boot = 500
         boot_idx_act = np.random.randint(0, self.nb_frames_feature_act - nb_frames_dtw_act - 1, nb_boot)
         boot_idx_est = np.random.randint(0, chromagram_sample.shape[0] - nb_frames_dtw_act - 1, nb_boot)
-        distance_stats = np.empty([nb_boot, 2])
+        distance_stats = np.empty(nb_boot)
         for k in range(nb_boot):                        
             chromagram_boot_act = chromagram_act[boot_idx_act[k]:boot_idx_act[k]+nb_frames_dtw_act,:]
             chromagram_boot_est = chromagram_sample[boot_idx_est[k]:boot_idx_est[k]+nb_frames_dtw_est,:]
-            distance_boot = cdist(chromagram_boot_act, chromagram_boot_est)
-            distance_dtw_boot = dtw_fast(np.array(distance_boot, dtype=np.float64), self.dtw.weights_mul, 1, self.filter.max_consecutive_steps_real)
+            distance_boot = distance_local_fcn(chromagram_boot_act, chromagram_boot_est)
+            distance_dtw_boot = dtw_fcn(np.array(distance_boot, dtype=np.float64), self.dtw.weights_mul, 1, max_consecutive_steps)
             distance_dtw_boot = distance_dtw_boot[np.isfinite(distance_dtw_boot[:,-1]), -1]
-            distance_stats[k,0] = np.mean(distance_dtw_boot)
-            distance_stats[k,1] = np.min(distance_dtw_boot)
-                           
-        a = 1
+            distance_stats[k] = np.min(distance_dtw_boot)
+            
+        random_distance_threshold = np.percentile(distance_stats, 10.0)
+        
+        return(random_distance_threshold)    
+                        
         
     def get_chromagram(self, wd, filename):
         '''
