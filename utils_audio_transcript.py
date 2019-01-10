@@ -794,6 +794,10 @@ def find_relative_mins(arr, order, nb_relative_mins):
         # Get the indices of the local mins (all of them at a given order)        
         idxs = argrelmin(arr_copy[:, k], order=order, mode='wrap')[0]
         
+        # In case of equality, argrelmin does not return any value.
+        # Correct for that...
+        idxs = idxs if idxs.size > 0 else np.array([np.argmin(arr_copy[:, k])])
+        
         # Sort the local mins
         values = arr_copy[idxs, k]
         idxs_to_sort = np.argsort(values)
