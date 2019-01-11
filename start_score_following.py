@@ -89,7 +89,7 @@ class MatcherManager():
         '''         
         midi_obj = self.matcher.midi_obj
         
-        # Re-initilaise the matcher, making sure that we have the same args as the 
+        # Re-initialise the matcher, making sure that we have the same args as the 
         # ones used for initialisation.
         self.matcher = Matcher(self.wd, self.filename, self.sr, self.hop_length,
                                compute_chromagram_fcn=self.matcher.compute_chromagram_fcn,
