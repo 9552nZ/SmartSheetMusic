@@ -137,3 +137,4 @@ Module 2:
 - http://forscore.co/about-music/
 - https://www.tido-music.com/
 - https://www.matchmysound.com/#blog
+- https://www.samplesumo.com/music-following
