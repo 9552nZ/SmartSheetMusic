@@ -138,3 +138,4 @@ Module 2:
 - https://www.tido-music.com/
 - https://www.matchmysound.com/#blog
 - https://www.samplesumo.com/music-following
+- http://beatik.com/en/about/how/
